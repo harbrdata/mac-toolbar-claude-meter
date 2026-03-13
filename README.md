@@ -10,6 +10,22 @@ Displays a color-coded ring gauge in the menu bar showing your current 5-hour us
 
 Requires Python 3.10+ and an active Claude Code login (`claude login`).
 
+### Option A: Download the DMG (easiest)
+
+1. Download `Claude-o-Meter.dmg` from the [latest release](https://github.com/harbrdata/mac-toolbar-claude-meter/releases/latest)
+2. Open the DMG
+3. Double-click **Install.command** — this copies the app to `/Applications` and sets it to launch on login
+
+To uninstall:
+
+```bash
+launchctl bootout gui/$(id -u)/com.local.claude-o-meter
+rm ~/Library/LaunchAgents/com.local.claude-o-meter.plist
+rm -rf /Applications/Claude-o-Meter.app
+```
+
+### Option B: Clone and install from source
+
 ```bash
 git clone git@github.com:harbrdata/mac-toolbar-claude-meter.git
 cd mac-toolbar-claude-meter
@@ -135,6 +151,16 @@ exec $(pwd)/.venv/bin/python3 $(pwd)/claude_meter.py 2>/tmp/claude_meter.log
 SCRIPT
 chmod +x "$APP_DIR/Contents/MacOS/launch"
 ```
+
+## Building the DMG
+
+To build a distributable DMG from source:
+
+```bash
+./build_dmg.sh
+```
+
+This creates `dist/Claude-o-Meter.dmg` — a self-contained disk image with the `.app` bundle (all Python dependencies embedded) and an `Install.command` script.
 
 ## How authentication works
 
