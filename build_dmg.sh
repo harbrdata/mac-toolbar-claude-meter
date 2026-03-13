@@ -83,17 +83,17 @@ echo "=== Installing $APP_NAME ==="
 echo ""
 
 # Stop any running instance
-if pgrep -f "$APP_NAME" >/dev/null 2>&1; then
-    echo "Stopping running instance..."
-    pkill -f "$APP_NAME" 2>/dev/null || true
-    sleep 1
-fi
+echo "Stopping any running instances..."
+osascript -e "quit app \"$APP_NAME\"" 2>/dev/null || true
+pkill -f "claude_meter.py" 2>/dev/null || true
+pkill -f "$APP_NAME" 2>/dev/null || true
+launchctl bootout "gui/$(id -u)/$PLIST_LABEL" 2>/dev/null || true
+sleep 1
+pkill -9 -f "claude_meter.py" 2>/dev/null || true
+pkill -9 -f "$APP_NAME" 2>/dev/null || true
 
-# Remove old launch agent
-if [ -f "$PLIST_PATH" ]; then
-    launchctl bootout "gui/$(id -u)/$PLIST_LABEL" 2>/dev/null || true
-    rm -f "$PLIST_PATH"
-fi
+# Remove old launch agent plist
+rm -f "$PLIST_PATH"
 
 # Copy app to /Applications
 echo "Copying to $INSTALL_DIR..."
