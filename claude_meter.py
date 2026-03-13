@@ -64,7 +64,8 @@ RATE_LIMIT_PAUSE_MAX = 600  # seconds (10 minutes) — cap for exponential backo
 # Constants
 # ---------------------------------------------------------------------------
 
-VERSION = "1.1.0"
+_VERSION_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "VERSION")
+VERSION = open(_VERSION_FILE).read().strip() if os.path.exists(_VERSION_FILE) else "0.0.0"
 
 KEYCHAIN_SERVICE = "Claude Code-credentials"
 USAGE_URL = "https://api.anthropic.com/api/oauth/usage"

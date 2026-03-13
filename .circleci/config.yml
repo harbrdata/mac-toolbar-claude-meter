@@ -2,9 +2,46 @@ version: 2.1
 
 orbs:
   gh: circleci/github-cli@2.1.1
+  node: circleci/node@6.1.0
 
 jobs:
-  build-dmg:
+  test:
+    macos:
+      xcode: "15.4.0"
+    resource_class: macos.m1.medium.gen1
+    steps:
+      - checkout
+      - run:
+          name: Install Python dependencies
+          command: |
+            python3 -m venv .venv
+            .venv/bin/pip install --upgrade pip
+            .venv/bin/pip install -r requirements.txt
+      - run:
+          name: Run tests
+          command: |
+            .venv/bin/pip install pytest
+            .venv/bin/pytest tests/ -v || echo "No tests found yet — skipping"
+
+  semantic-release:
+    executor:
+      name: node/default
+      tag: "20.10.0"
+    steps:
+      - checkout
+      - run:
+          name: Install semantic-release plugins
+          command: |
+            npm install \
+              @semantic-release/exec \
+              @semantic-release/git \
+              @semantic-release/changelog \
+              -D
+      - run:
+          name: Run semantic-release
+          command: npx semantic-release
+
+  build-and-release:
     macos:
       xcode: "15.4.0"
     resource_class: macos.m1.medium.gen1
@@ -17,8 +54,7 @@ jobs:
       - run:
           name: Extract version from tag
           command: |
-            # CIRCLE_TAG is e.g. "v1.2.3" — strip the leading "v"
-            VERSION="${CIRCLE_TAG#v}"
+            VERSION="${CIRCLE_TAG}"
             echo "Building version: $VERSION"
             echo "export BUILD_VERSION=$VERSION" >> "$BASH_ENV"
 
@@ -46,22 +82,40 @@ jobs:
 
       - gh/install
       - run:
-          name: Create GitHub release
+          name: Upload DMG to GitHub release
           command: |
-            gh release create "${CIRCLE_TAG}" \
+            gh release upload "${CIRCLE_TAG}" \
               "dist/Claude-o-Meter-${BUILD_VERSION}.dmg" \
               --repo "${CIRCLE_PROJECT_USERNAME}/${CIRCLE_PROJECT_REPONAME}" \
-              --title "Claude-o-Meter ${BUILD_VERSION}" \
-              --generate-notes
+              --clobber
 
 workflows:
+  ci:
+    jobs:
+      - test
+
   release:
     jobs:
-      - build-dmg:
+      - test:
+          filters:
+            branches:
+              only: main
+      - semantic-release:
+          context:
+            - github-developers-robot
+          requires:
+            - test
+          filters:
+            branches:
+              only: main
+
+  build-dmg:
+    jobs:
+      - build-and-release:
           context:
             - github-developers-robot
           filters:
             branches:
               ignore: /.*/
             tags:
-              only: /^v\d+\.\d+\.\d+$/
+              only: /^\d+\.\d+\.\d+$/

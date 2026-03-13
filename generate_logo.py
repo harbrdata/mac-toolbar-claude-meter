@@ -17,7 +17,8 @@ from AppKit import (
     NSString,
 )
 
-VERSION = "1.1.0"
+_VERSION_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "VERSION")
+VERSION = open(_VERSION_FILE).read().strip() if os.path.exists(_VERSION_FILE) else "0.0.0"
 
 # Layout constants
 HEIGHT = 160

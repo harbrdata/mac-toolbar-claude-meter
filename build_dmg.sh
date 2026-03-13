@@ -14,11 +14,11 @@ CONTENTS="$APP_DIR/Contents"
 MACOS_DIR="$CONTENTS/MacOS"
 RESOURCES="$CONTENTS/Resources"
 
-# Determine version: use BUILD_VERSION env var, or extract from claude_meter.py
+# Determine version: use BUILD_VERSION env var, or read from VERSION file
 if [ -n "$BUILD_VERSION" ]; then
     VERSION="$BUILD_VERSION"
 else
-    VERSION=$(sed -n 's/^VERSION = "\(.*\)"/\1/p' "$SCRIPT_DIR/claude_meter.py")
+    VERSION=$(cat "$SCRIPT_DIR/VERSION")
 fi
 
 echo "=== Building $APP_NAME.dmg (v$VERSION) ==="
@@ -36,8 +36,10 @@ echo "Installing dependencies..."
 rm -rf "$BUILD_DIR" "$DIST_DIR"
 mkdir -p "$MACOS_DIR" "$RESOURCES"
 
-# 3. Copy the app source (stamp version into the Python source)
-sed "s/^VERSION = \".*\"/VERSION = \"$VERSION\"/" "$SCRIPT_DIR/claude_meter.py" > "$RESOURCES/claude_meter.py"
+# 3. Copy the app source
+cp "$SCRIPT_DIR/claude_meter.py" "$RESOURCES/claude_meter.py"
+cp "$SCRIPT_DIR/VERSION" "$RESOURCES/VERSION"
+cp "$SCRIPT_DIR/logo.png" "$RESOURCES/logo.png"
 cp "$SCRIPT_DIR/requirements.txt" "$RESOURCES/"
 
 # 4. Bundle the venv's site-packages (only what we need)
