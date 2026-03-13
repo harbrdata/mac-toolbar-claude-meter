@@ -51,7 +51,8 @@ log = logging.getLogger("claude_meter")
 
 # Sentinel returned by fetch_usage on a 429 to distinguish from other errors
 RATE_LIMITED = "RATE_LIMITED"
-RATE_LIMIT_PAUSE = 300  # seconds (5 minutes)
+RATE_LIMIT_PAUSE_DEFAULT = 60  # seconds — fallback when no Retry-After header
+RATE_LIMIT_PAUSE_MAX = 600  # seconds (10 minutes) — cap for exponential backoff
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -64,8 +65,8 @@ USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
 USER_AGENT = "claude-code/2.1.70"
 ANTHROPIC_BETA = "oauth-2025-04-20"
 
-POLL_INTERVAL_DEFAULT = 60  # seconds
-POLL_INTERVAL_OPTIONS = [30, 60, 120, 300]  # seconds
+POLL_INTERVAL_DEFAULT = 120  # seconds
+POLL_INTERVAL_OPTIONS = [60, 120, 300, 600]  # seconds
 
 THRESHOLD_WARNING = 0.60
 THRESHOLD_DANGER = 0.80
@@ -137,11 +138,11 @@ def get_access_token(creds: dict) -> str | None:
 # ---------------------------------------------------------------------------
 
 
-def fetch_usage(access_token: str) -> dict | str | None:
+def fetch_usage(access_token: str) -> dict | tuple[str, int] | None:
     """Fetch usage data from the Anthropic API.
 
-    Returns the parsed JSON dict on success, the RATE_LIMITED sentinel on 429,
-    or None on other errors.
+    Returns the parsed JSON dict on success, a (RATE_LIMITED, retry_seconds)
+    tuple on 429, or None on other errors.
     """
     try:
         resp = requests.get(
@@ -157,12 +158,16 @@ def fetch_usage(access_token: str) -> dict | str | None:
             log.warning("API returned 401 — re-login with `claude login`.")
             return None
         if resp.status_code == 429:
-            retry_after = resp.headers.get("Retry-After")
+            retry_after_raw = resp.headers.get("Retry-After")
+            try:
+                retry_after = int(retry_after_raw) if retry_after_raw else 0
+            except (ValueError, TypeError):
+                retry_after = 0
             log.warning(
                 "API rate-limited (429). Retry-After: %s",
-                retry_after or "not set",
+                retry_after_raw or "not set",
             )
-            return RATE_LIMITED
+            return (RATE_LIMITED, retry_after)
         resp.raise_for_status()
         return resp.json()
     except requests.RequestException as exc:
@@ -399,6 +404,8 @@ class ClaudeMeterDelegate(NSObject):
         self._rate_limit_resume_time = None
         self._rate_limit_timer = None
         self._rate_limit_countdown_timer = None
+        self._rate_limit_backoff = 0  # tracks consecutive rate-limits for backoff
+        self._cached_token = None
 
         self.menu = NSMenu.alloc().init()
         self.status_item.setMenu_(self.menu)
@@ -590,11 +597,28 @@ class ClaudeMeterDelegate(NSObject):
     def quit_(self, sender):
         NSApplication.sharedApplication().terminate_(self)
 
-    def _enter_rate_limit_pause(self):
-        """Pause polling for RATE_LIMIT_PAUSE seconds after a 429."""
+    def _enter_rate_limit_pause(self, retry_after: int = 0):
+        """Pause polling after a 429.
+
+        Uses the server's Retry-After value if provided, otherwise applies
+        exponential backoff starting from RATE_LIMIT_PAUSE_DEFAULT and
+        capping at RATE_LIMIT_PAUSE_MAX.
+        """
+        self._rate_limit_backoff += 1
+
+        if retry_after > 0:
+            pause = min(retry_after, RATE_LIMIT_PAUSE_MAX)
+        else:
+            # Exponential backoff: 60, 120, 240, 480, capped at 600
+            pause = min(
+                RATE_LIMIT_PAUSE_DEFAULT * (2 ** (self._rate_limit_backoff - 1)),
+                RATE_LIMIT_PAUSE_MAX,
+            )
+
         self._rate_limited = True
-        self._rate_limit_resume_time = time.time() + RATE_LIMIT_PAUSE
-        log.warning("Pausing polling for %d seconds due to rate limit", RATE_LIMIT_PAUSE)
+        self._rate_limit_resume_time = time.time() + pause
+        log.warning("Pausing polling for %d seconds due to rate limit (attempt %d)",
+                     pause, self._rate_limit_backoff)
 
         # Grey out the icon
         self.status_item.setImage_(create_paused_icon())
@@ -606,7 +630,7 @@ class ClaudeMeterDelegate(NSObject):
             self._rate_limit_timer.invalidate()
         self._rate_limit_timer = (
             NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
-                RATE_LIMIT_PAUSE, self, "rateLimitResume:", None, False
+                pause, self, "rateLimitResume:", None, False
             )
         )
 
@@ -645,26 +669,36 @@ class ClaudeMeterDelegate(NSObject):
 
     def _fetch_and_update(self):
         log.info("Fetching usage data...")
-        creds = read_keychain_credentials()
-        if not creds:
-            log.error("No credentials found")
-            self._show_with_last_data()
-            return
 
-        token = get_access_token(creds)
-        if not token:
+        # Cache the token to avoid hitting keychain + refresh on every poll
+        if not self._cached_token:
+            creds = read_keychain_credentials()
+            if not creds:
+                log.error("No credentials found")
+                self._show_with_last_data()
+                return
+            self._cached_token = get_access_token(creds)
+
+        if not self._cached_token:
             log.error("No access token")
             self._show_with_last_data()
             return
 
-        data = fetch_usage(token)
-        if data is RATE_LIMITED:
-            self._enter_rate_limit_pause()
+        data = fetch_usage(self._cached_token)
+
+        # Handle rate-limit tuple
+        if isinstance(data, tuple) and data[0] is RATE_LIMITED:
+            self._enter_rate_limit_pause(retry_after=data[1])
             return
-        if not data:
-            log.error("API fetch failed")
+
+        # 401 likely means token expired — clear cache so next poll refreshes
+        if data is None:
+            self._cached_token = None
             self._show_with_last_data()
             return
+
+        # Success — reset backoff counter
+        self._rate_limit_backoff = 0
 
         windows = parse_usage(data)
         log.info("Got %d usage windows", len(windows))
