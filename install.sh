@@ -56,21 +56,21 @@ SCRIPT
 chmod +x "$APP_DIR/Contents/MacOS/launch"
 
 # 3. Stop any running instances
-if pgrep -f "claude_meter.py" >/dev/null 2>&1 || pgrep -f "$APP_NAME" >/dev/null 2>&1; then
-    echo "Stopping running instance..."
-    pkill -f "claude_meter.py" 2>/dev/null || true
-    pkill -f "$APP_NAME" 2>/dev/null || true
-    sleep 1
-fi
+echo "Stopping any running instances..."
+# Gracefully quit the app via AppleScript
+osascript -e "quit app \"$APP_NAME\"" 2>/dev/null || true
+# Also kill by process pattern in case it was launched from terminal
+pkill -f "claude_meter.py" 2>/dev/null || true
+pkill -f "$APP_NAME" 2>/dev/null || true
+# Bootout the launch agent so launchctl doesn't fight us
+launchctl bootout "gui/$(id -u)/$PLIST_LABEL" 2>/dev/null || true
+# Wait for processes to exit, force-kill stragglers
+sleep 1
+pkill -9 -f "claude_meter.py" 2>/dev/null || true
+pkill -9 -f "$APP_NAME" 2>/dev/null || true
 
-# 4. Remove old launch agent if present
-if [ -f "$PLIST_PATH" ]; then
-    echo "Updating existing launch agent..."
-    launchctl bootout "gui/$(id -u)/$PLIST_LABEL" 2>/dev/null || true
-    rm -f "$PLIST_PATH"
-else
-    echo "Installing launch agent (run on login)..."
-fi
+# 4. Remove old launch agent plist
+rm -f "$PLIST_PATH"
 
 # 5. Install launch agent
 cat > "$PLIST_PATH" << EOF
