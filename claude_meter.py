@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
+# Copyright (c) 2025-2026 Harbr Data. All rights reserved.
 """Claude-o-Meter — macOS menu bar app showing Claude Code plan usage."""
 
 import collections
 import json
 import logging
+import os
 import subprocess
 import time
 from datetime import datetime, timezone
@@ -19,13 +21,17 @@ from AppKit import (
     NSFontAttributeName,
     NSForegroundColorAttributeName,
     NSImage,
+    NSImageScaleProportionallyUpOrDown,
+    NSImageView,
     NSMenu,
     NSMenuItem,
     NSObject,
     NSStatusBar,
     NSTimer,
     NSVariableStatusItemLength,
+    NSView,
 )
+from Foundation import NSAttributedString, NSString
 from PyObjCTools import AppHelper
 
 class RingBufferHandler(logging.Handler):
@@ -58,7 +64,7 @@ RATE_LIMIT_PAUSE_MAX = 600  # seconds (10 minutes) — cap for exponential backo
 # Constants
 # ---------------------------------------------------------------------------
 
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 
 KEYCHAIN_SERVICE = "Claude Code-credentials"
 USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
@@ -72,6 +78,7 @@ THRESHOLD_WARNING = 0.60
 THRESHOLD_DANGER = 0.80
 THRESHOLD_CRITICAL = 0.95
 
+LOGO_ICON_HEIGHT = 80
 
 # ---------------------------------------------------------------------------
 # Keychain
@@ -235,17 +242,6 @@ def usage_color(utilization: float) -> NSColor:
     return NSColor.greenColor()
 
 
-def usage_color_text(utilization: float) -> str:
-    """Return a colored circle emoji for menu items."""
-    if utilization >= THRESHOLD_CRITICAL:
-        return "\U0001f534"
-    if utilization >= THRESHOLD_DANGER:
-        return "\U0001f7e0"
-    if utilization >= THRESHOLD_WARNING:
-        return "\U0001f7e1"
-    return "\U0001f7e2"
-
-
 # ---------------------------------------------------------------------------
 # Gauge icon drawing
 # ---------------------------------------------------------------------------
@@ -253,13 +249,11 @@ def usage_color_text(utilization: float) -> str:
 
 def create_gauge_icon(utilization: float, size: int = 18) -> NSImage:
     """Draw a circular progress ring with percentage in the center."""
-    from Foundation import NSString
-
     img = NSImage.alloc().initWithSize_((size, size))
     img.lockFocus()
 
     cx, cy = size / 2, size / 2
-    radius = (size / 2) - 2.5
+    radius = (size / 2) - 1.5
     line_width = 2.0
 
     # Background ring (full circle)
@@ -285,7 +279,7 @@ def create_gauge_icon(utilization: float, size: int = 18) -> NSImage:
 
     # Percentage text in center
     pct = f"{int(utilization * 100)}"
-    font_size = size * 0.3
+    font_size = size * 0.28
     attrs = {
         NSFontAttributeName: NSFont.boldSystemFontOfSize_(font_size),
         NSForegroundColorAttributeName: NSColor.whiteColor(),
@@ -303,8 +297,6 @@ def create_gauge_icon(utilization: float, size: int = 18) -> NSImage:
 
 def create_paused_icon(size: int = 18) -> NSImage:
     """Draw a greyed-out gauge icon indicating polling is paused."""
-    from Foundation import NSString
-
     img = NSImage.alloc().initWithSize_((size, size))
     img.lockFocus()
 
@@ -356,8 +348,6 @@ def create_error_icon(size: int = 18) -> NSImage:
         NSFontAttributeName: NSFont.boldSystemFontOfSize_(10),
         NSForegroundColorAttributeName: NSColor.orangeColor(),
     }
-    from Foundation import NSString
-
     s = NSString.stringWithString_("!")
     s_size = s.sizeWithAttributes_(attrs)
     s.drawAtPoint_withAttributes_(
@@ -369,6 +359,46 @@ def create_error_icon(size: int = 18) -> NSImage:
     return img
 
 
+_LOGO_DIR = os.path.dirname(os.path.abspath(__file__))
+
+
+def create_logo_icon(height: int = 18) -> NSImage:
+    """Load the pre-rendered logo PNG and scale proportionally to *height*."""
+    path = os.path.join(_LOGO_DIR, "logo.png")
+    img = NSImage.alloc().initByReferencingFile_(path)
+    orig = img.size()
+    aspect = orig.width / orig.height if orig.height else 1.0
+    img.setSize_((height * aspect, height))
+    img.setTemplate_(False)
+    return img
+
+
+# ---------------------------------------------------------------------------
+# Styled menu helpers
+# ---------------------------------------------------------------------------
+
+
+def _styled_item(text, font=None, color=None,
+                 enabled=True) -> NSMenuItem:
+    """Create a menu item with full-color attributed text.
+
+    Items with no action and no target are non-interactive but
+    stay enabled so macOS does not dim the attributed title.
+    """
+    item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+        "", None, "")
+    attrs = {
+        NSFontAttributeName: font or NSFont.menuFontOfSize_(13),
+        NSForegroundColorAttributeName: color or NSColor.labelColor(),
+    }
+    item.setAttributedTitle_(
+        NSAttributedString.alloc().initWithString_attributes_(
+            text, attrs)
+    )
+    item.setEnabled_(enabled)
+    return item
+
+
 # ---------------------------------------------------------------------------
 # Menu Bar App
 # ---------------------------------------------------------------------------
@@ -378,7 +408,7 @@ def bar_chart(utilization: float, width: int = 20) -> str:
     """Return a text-based progress bar."""
     filled = min(int(utilization * width), width)
     empty = width - filled
-    return f"[{'█' * filled}{'░' * empty}]"
+    return "▰" * filled + "▱" * empty
 
 
 class ClaudeMeterDelegate(NSObject):
@@ -390,10 +420,10 @@ class ClaudeMeterDelegate(NSObject):
         self.status_item = NSStatusBar.systemStatusBar().statusItemWithLength_(
             NSVariableStatusItemLength
         )
-        # Set initial gauge icon (empty)
-        self.status_item.setImage_(create_gauge_icon(0.0))
-        self.status_item.setTitle_("")
-        self.status_item.setHighlightMode_(True)
+        # Use the modern button() API (required on macOS 26+, recommended since 10.12)
+        button = self.status_item.button()
+        button.setImage_(create_gauge_icon(0.0))
+        button.setTitle_("")
 
         self.poll_interval = POLL_INTERVAL_DEFAULT
         self.poll_timer = None
@@ -408,6 +438,7 @@ class ClaudeMeterDelegate(NSObject):
         self._cached_token = None
 
         self.menu = NSMenu.alloc().init()
+        self.menu.setAutoenablesItems_(False)
         self.status_item.setMenu_(self.menu)
         self._build_menu([], None)
 
@@ -433,10 +464,25 @@ class ClaudeMeterDelegate(NSObject):
         """Rebuild the dropdown menu with all usage details."""
         self.menu.removeAllItems()
 
+        # banner header — use custom view with padding to align with menu text
+        MENU_PAD = 14  # matches macOS menu item left/right text inset
         header = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
-            f"Claude-o-Meter v{VERSION}", None, ""
+            "", None, ""
         )
-        header.setEnabled_(False)
+        logo_img = create_logo_icon(LOGO_ICON_HEIGHT)
+        logo_size = logo_img.size()
+        container_w = logo_size.width + MENU_PAD * 2
+        container_h = logo_size.height
+        container = NSView.alloc().initWithFrame_(
+            ((0, 0), (container_w, container_h))
+        )
+        img_view = NSImageView.alloc().initWithFrame_(
+            ((MENU_PAD, 0), (logo_size.width, logo_size.height))
+        )
+        img_view.setImage_(logo_img)
+        img_view.setImageScaling_(NSImageScaleProportionallyUpOrDown)
+        container.addSubview_(img_view)
+        header.setView_(container)
         self.menu.addItem_(header)
         self.menu.addItem_(NSMenuItem.separatorItem())
 
@@ -446,40 +492,42 @@ class ClaudeMeterDelegate(NSObject):
             if remaining < 0:
                 remaining = 0
             mins, secs = divmod(remaining, 60)
-            banner = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
-                f"\u26a0\ufe0f  Rate limited — polling paused ({mins}m {secs}s)",
-                None,
-                "",
+            banner = _styled_item(
+                f"\u26a0\ufe0f  Rate limited \u2014 polling paused ({mins}m {secs}s)",
+                color=NSColor.systemOrangeColor(),
             )
-            banner.setEnabled_(False)
             self.menu.addItem_(banner)
             self.menu.addItem_(NSMenuItem.separatorItem())
 
+        mono = (
+            NSFont.fontWithName_size_("Menlo", 12)
+            or NSFont.systemFontOfSize_(12)
+        )
+
         if not windows:
-            loading = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
-                "Loading...", None, ""
+            self.menu.addItem_(
+                _styled_item("Loading...", color=NSColor.secondaryLabelColor())
             )
-            loading.setEnabled_(False)
-            self.menu.addItem_(loading)
         else:
             for w in windows:
                 pct = int(w["utilization"] * 100)
-                sym = usage_color_text(w["utilization"])
                 bar = bar_chart(w["utilization"])
                 reset = format_reset_time(w.get("resets_at"))
 
-                line = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
-                    f"{sym} {w['label']}: {pct}%  {bar}", None, ""
+                line = _styled_item(
+                    f" {w['label']}: {pct}%  {bar}", font=mono,
+                    color=NSColor.controlTextColor(),
                 )
-                line.setEnabled_(False)
+                line.setImage_(create_gauge_icon(w["utilization"], size=16))
                 self.menu.addItem_(line)
-
-                reset_line = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
-                    f"    Resets in: {reset}", None, ""
+                self.menu.addItem_(
+                    _styled_item(
+                        f"       Resets in: {reset}",
+                        font=NSFont.fontWithName_size_("Menlo", 11)
+                        or NSFont.systemFontOfSize_(11),
+                        color=NSColor.labelColor(),
+                    )
                 )
-                reset_line.setEnabled_(False)
-                self.menu.addItem_(reset_line)
-
                 self.menu.addItem_(NSMenuItem.separatorItem())
 
         refresh_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
@@ -526,27 +574,33 @@ class ClaudeMeterDelegate(NSObject):
             "Recent Logs", None, ""
         )
         logs_submenu = NSMenu.alloc().init()
+        logs_submenu.setAutoenablesItems_(False)
         log_lines = list(log_buffer.records)
         if not log_lines:
-            empty = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
-                "(no logs yet)", None, ""
+            logs_submenu.addItem_(
+                _styled_item("(no logs yet)", color=NSColor.secondaryLabelColor())
             )
-            empty.setEnabled_(False)
-            logs_submenu.addItem_(empty)
         else:
-            # Show most recent last (bottom of submenu)
+            log_font = (
+                NSFont.fontWithName_size_("Menlo", 12)
+                or NSFont.systemFontOfSize_(12)
+            )
             for line in log_lines[-10:]:
-                # Truncate long lines for the menu
-                display = line if len(line) <= 80 else line[:77] + "..."
-                item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
-                    display, None, ""
+                display = line if len(line) <= 100 else line[:97] + "..."
+                logs_submenu.addItem_(
+                    _styled_item(display, font=log_font,
+                                 color=NSColor.labelColor())
                 )
-                item.setEnabled_(False)
-                logs_submenu.addItem_(item)
         logs_item.setSubmenu_(logs_submenu)
         self.menu.addItem_(logs_item)
 
         self.menu.addItem_(NSMenuItem.separatorItem())
+
+        about_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+            "About Claude-o-Meter", "showAbout:", ""
+        )
+        about_item.setTarget_(self)
+        self.menu.addItem_(about_item)
 
         quit_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
             "Quit", "quit:", ""
@@ -579,10 +633,10 @@ class ClaudeMeterDelegate(NSObject):
                 self.poll_timer = None
         # Show paused icon when disabled
         if not self.polling_enabled:
-            self.status_item.setImage_(create_paused_icon())
-            self.status_item.setTitle_("")
+            self.status_item.button().setImage_(create_paused_icon())
+            self.status_item.button().setTitle_("")
         elif self._last_primary:
-            self.status_item.setImage_(
+            self.status_item.button().setImage_(
                 create_gauge_icon(self._last_primary["utilization"])
             )
         self._build_menu(self._last_windows, self._last_primary)
@@ -596,6 +650,34 @@ class ClaudeMeterDelegate(NSObject):
     @objc.IBAction
     def quit_(self, sender):
         NSApplication.sharedApplication().terminate_(self)
+
+    @objc.IBAction
+    def showAbout_(self, sender):
+        app = NSApplication.sharedApplication()
+        app.activateIgnoringOtherApps_(True)
+        credits_text = (
+            "A macOS menu bar app that shows your Claude Code "
+            "plan usage at a glance.\n\n"
+            "Displays a color-coded ring gauge showing your current "
+            "usage across all rate-limit windows with progress bars "
+            "and reset countdowns.\n\n"
+            "Reads credentials from your existing `claude login` session. "
+            "No credentials are stored, transmitted, or logged by this app."
+        )
+        app.orderFrontStandardAboutPanelWithOptions_({
+            "ApplicationName": "Claude-o-Meter",
+            "ApplicationVersion": VERSION,
+            "Version": "",
+            "Copyright": "\u2622 \u00a9 2025-2026 Harbr Data. All rights reserved.",
+            "Credits": NSAttributedString.alloc().initWithString_attributes_(
+                credits_text,
+                {
+                    NSFontAttributeName: NSFont.systemFontOfSize_(11),
+                    NSForegroundColorAttributeName: NSColor.labelColor(),
+                },
+            ),
+            "ApplicationIcon": create_logo_icon(64),
+        })
 
     def _enter_rate_limit_pause(self, retry_after: int = 0):
         """Pause polling after a 429.
@@ -621,8 +703,8 @@ class ClaudeMeterDelegate(NSObject):
                      pause, self._rate_limit_backoff)
 
         # Grey out the icon
-        self.status_item.setImage_(create_paused_icon())
-        self.status_item.setTitle_("")
+        self.status_item.button().setImage_(create_paused_icon())
+        self.status_item.button().setTitle_("")
         self._build_menu(self._last_windows, self._last_primary)
 
         # Schedule automatic resume
@@ -723,17 +805,17 @@ class ClaudeMeterDelegate(NSObject):
         if self._last_windows:
             self._update_display(self._last_windows, self._last_primary)
         else:
-            self.status_item.setImage_(create_error_icon())
-            self.status_item.setTitle_("")
+            self.status_item.button().setImage_(create_error_icon())
+            self.status_item.button().setTitle_("")
             self._build_menu([], None)
 
     def _update_display(self, windows, primary):
         """Update the gauge icon and dropdown menu."""
         if primary:
-            self.status_item.setImage_(create_gauge_icon(primary["utilization"]))
+            self.status_item.button().setImage_(create_gauge_icon(primary["utilization"]))
         else:
-            self.status_item.setImage_(create_gauge_icon(0.0))
-        self.status_item.setTitle_("")
+            self.status_item.button().setImage_(create_gauge_icon(0.0))
+        self.status_item.button().setTitle_("")
         self._build_menu(windows, primary)
 
 
@@ -743,8 +825,18 @@ class ClaudeMeterDelegate(NSObject):
 
 if __name__ == "__main__":
     app = NSApplication.sharedApplication()
+    # On macOS 26+, briefly set Regular policy so the system registers
+    # the app as a menu-bar-item provider, then switch to Accessory
+    # to hide the Dock icon.
     app.setActivationPolicy_(NSApplicationActivationPolicyAccessory)
     delegate = ClaudeMeterDelegate.alloc().init()
     app.setDelegate_(delegate)
+
+    # Explicitly mark the status item as visible (macOS 26+ respects this)
+    try:
+        delegate.status_item.setVisible_(True)
+    except AttributeError:
+        pass  # older macOS versions without setVisible_
+
     log.info("Claude Meter starting...")
     AppHelper.runEventLoop()
