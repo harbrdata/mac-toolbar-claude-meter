@@ -1,0 +1,9 @@
+.venv/
+__pycache__/
+*.pyc
+*.app/
+build/
+dist/
+*.egg-info/
+setup.py
+gauge_preview.py
