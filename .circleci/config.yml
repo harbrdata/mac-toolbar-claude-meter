@@ -1,27 +1,24 @@
 version: 2.1
 
 orbs:
-  gh: circleci/github-cli@2.1.1
   node: circleci/node@6.1.0
+  python: circleci/python@2.1.1
 
 jobs:
   test:
-    macos:
-      xcode: "15.4.0"
-    resource_class: macos.m1.medium.gen1
+    executor:
+      name: python/default
+      tag: "3.12"
     steps:
       - checkout
       - run:
-          name: Install Python dependencies
+          name: Install dependencies
           command: |
-            python3 -m venv .venv
-            .venv/bin/pip install --upgrade pip
-            .venv/bin/pip install -r requirements.txt
+            pip install pytest
       - run:
           name: Run tests
           command: |
-            .venv/bin/pip install pytest
-            .venv/bin/pytest tests/ -v || echo "No tests found yet — skipping"
+            pytest tests/ -v || echo "No tests found yet — skipping"
 
   semantic-release:
     executor:
@@ -40,54 +37,15 @@ jobs:
       - run:
           name: Run semantic-release
           command: npx semantic-release
-
-  build-and-release:
-    macos:
-      xcode: "15.4.0"
-    resource_class: macos.m1.medium.gen1
-    steps:
-      - checkout
-      - add_ssh_keys:
-          fingerprints:
-            - "79:8b:52:30:36:e2:7b:8b:9d:5c:9d:40:87:33:a1:f6"
-
       - run:
-          name: Extract version from tag
+          name: Reminder
           command: |
-            VERSION="${CIRCLE_TAG}"
-            echo "Building version: $VERSION"
-            echo "export BUILD_VERSION=$VERSION" >> "$BASH_ENV"
-
-      - run:
-          name: Install Python dependencies
-          command: |
-            python3 -m venv .venv
-            .venv/bin/pip install --upgrade pip
-            .venv/bin/pip install -r requirements.txt
-
-      - run:
-          name: Build DMG
-          command: |
-            chmod +x build_dmg.sh
-            ./build_dmg.sh
-
-      - run:
-          name: Rename DMG with version
-          command: |
-            mv dist/Claude-o-Meter.dmg "dist/Claude-o-Meter-${BUILD_VERSION}.dmg"
-
-      - store_artifacts:
-          path: dist/
-          destination: dmg
-
-      - gh/install
-      - run:
-          name: Upload DMG to GitHub release
-          command: |
-            gh release upload "${CIRCLE_TAG}" \
-              "dist/Claude-o-Meter-${BUILD_VERSION}.dmg" \
-              --repo "${CIRCLE_PROJECT_USERNAME}/${CIRCLE_PROJECT_REPONAME}" \
-              --clobber
+            echo ""
+            echo "============================================"
+            echo "  To build the DMG, run locally:"
+            echo "    ./build_dmg.sh"
+            echo "============================================"
+            echo ""
 
 workflows:
   ci:
@@ -108,14 +66,3 @@ workflows:
           filters:
             branches:
               only: main
-
-  build-dmg:
-    jobs:
-      - build-and-release:
-          context:
-            - github-developers-robot
-          filters:
-            branches:
-              ignore: /.*/
-            tags:
-              only: /^\d+\.\d+\.\d+$/
