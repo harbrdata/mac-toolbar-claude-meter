@@ -30,6 +30,9 @@ To uninstall:
 - Dropdown with all usage windows: 5h, 7d, Opus, Sonnet, etc.
 - Progress bars and reset time countdowns
 - Configurable refresh interval (30s / 1m / 2m / 5m)
+- Toggle polling on/off from the menu
+- Automatic rate-limit handling — pauses polling for 5 minutes on a 429, shows a greyed-out icon and countdown in the dropdown
+- Recent Logs submenu to see the last 10 log entries without leaving the menu bar
 - Reads credentials from your existing `claude login` session
 - No dock icon — runs purely in the menu bar
 
@@ -143,10 +146,11 @@ The app uses the access token to call the Anthropic usage API (`https://api.anth
 
 ## Logs
 
-Logs are written to `/tmp/claude_meter.log` when running via the `.app` bundle or Launch Agent. When running from Terminal directly, logs print to stdout.
+Logs are written to `/tmp/claude_meter.log` when running via the `.app` bundle or Launch Agent. When running from Terminal directly, logs print to stdout. You can also view the last 10 log entries from the **Recent Logs** submenu in the dropdown.
 
 ## Troubleshooting
 
 - **Menu bar icon not visible:** Your menu bar may be full. Hold Cmd and drag other icons to make space, or use a menu bar manager like Bartender or Ice.
-- **"Loading..." in dropdown:** The API may be rate-limited. Wait for the next refresh cycle.
+- **Greyed-out "||" icon:** The app is either rate-limited (auto-resumes after 5 minutes) or polling is turned off. Open the dropdown to see which.
+- **"Loading..." in dropdown:** The API may be slow. Wait for the next refresh cycle.
 - **"!" error icon:** Run `claude login` to refresh your credentials.

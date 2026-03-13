@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Claude-o-Meter — macOS menu bar app showing Claude Code plan usage."""
 
+import collections
 import json
 import logging
 import subprocess
@@ -27,12 +28,30 @@ from AppKit import (
 )
 from PyObjCTools import AppHelper
 
+class RingBufferHandler(logging.Handler):
+    """Keeps the last N log records in a deque for display in the menu."""
+
+    def __init__(self, capacity: int = 20):
+        super().__init__()
+        self.records: collections.deque[str] = collections.deque(maxlen=capacity)
+
+    def emit(self, record):
+        self.records.append(self.format(record))
+
+
+log_buffer = RingBufferHandler(capacity=20)
+log_buffer.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
-    handlers=[logging.StreamHandler()],
+    handlers=[logging.StreamHandler(), log_buffer],
 )
 log = logging.getLogger("claude_meter")
+
+# Sentinel returned by fetch_usage on a 429 to distinguish from other errors
+RATE_LIMITED = "RATE_LIMITED"
+RATE_LIMIT_PAUSE = 300  # seconds (5 minutes)
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -116,8 +135,12 @@ def get_access_token(creds: dict) -> str | None:
 # ---------------------------------------------------------------------------
 
 
-def fetch_usage(access_token: str) -> dict | None:
-    """Fetch usage data from the Anthropic API."""
+def fetch_usage(access_token: str) -> dict | str | None:
+    """Fetch usage data from the Anthropic API.
+
+    Returns the parsed JSON dict on success, the RATE_LIMITED sentinel on 429,
+    or None on other errors.
+    """
     try:
         resp = requests.get(
             USAGE_URL,
@@ -132,8 +155,12 @@ def fetch_usage(access_token: str) -> dict | None:
             log.warning("API returned 401 — re-login with `claude login`.")
             return None
         if resp.status_code == 429:
-            log.warning("API rate-limited (429).")
-            return None
+            retry_after = resp.headers.get("Retry-After")
+            log.warning(
+                "API rate-limited (429). Retry-After: %s",
+                retry_after or "not set",
+            )
+            return RATE_LIMITED
         resp.raise_for_status()
         return resp.json()
     except requests.RequestException as exc:
@@ -267,6 +294,41 @@ def create_gauge_icon(utilization: float, size: int = 18) -> NSImage:
     return img
 
 
+def create_paused_icon(size: int = 18) -> NSImage:
+    """Draw a greyed-out gauge icon indicating polling is paused."""
+    from Foundation import NSString
+
+    img = NSImage.alloc().initWithSize_((size, size))
+    img.lockFocus()
+
+    cx, cy = size / 2, size / 2
+    radius = (size / 2) - 2.5
+    line_width = 2.0
+
+    track = NSBezierPath.bezierPath()
+    track.appendBezierPathWithArcWithCenter_radius_startAngle_endAngle_(
+        (cx, cy), radius, 0, 360
+    )
+    NSColor.grayColor().setStroke()
+    track.setLineWidth_(line_width)
+    track.stroke()
+
+    # "⏸" text in center
+    attrs = {
+        NSFontAttributeName: NSFont.boldSystemFontOfSize_(size * 0.35),
+        NSForegroundColorAttributeName: NSColor.grayColor(),
+    }
+    s = NSString.stringWithString_("||")
+    s_size = s.sizeWithAttributes_(attrs)
+    s.drawAtPoint_withAttributes_(
+        (cx - s_size.width / 2, cy - s_size.height / 2), attrs
+    )
+
+    img.unlockFocus()
+    img.setTemplate_(False)
+    return img
+
+
 def create_error_icon(size: int = 18) -> NSImage:
     """Draw an error/warning icon."""
     img = NSImage.alloc().initWithSize_((size, size))
@@ -328,8 +390,12 @@ class ClaudeMeterDelegate(NSObject):
 
         self.poll_interval = POLL_INTERVAL_DEFAULT
         self.poll_timer = None
+        self.polling_enabled = True
         self._last_windows = []
         self._last_primary = None
+        self._rate_limited = False
+        self._rate_limit_resume_time = None
+        self._rate_limit_timer = None
 
         self.menu = NSMenu.alloc().init()
         self.status_item.setMenu_(self.menu)
@@ -364,6 +430,21 @@ class ClaudeMeterDelegate(NSObject):
         self.menu.addItem_(header)
         self.menu.addItem_(NSMenuItem.separatorItem())
 
+        # Rate-limit banner
+        if self._rate_limited and self._rate_limit_resume_time:
+            remaining = int(self._rate_limit_resume_time - time.time())
+            if remaining < 0:
+                remaining = 0
+            mins, secs = divmod(remaining, 60)
+            banner = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+                f"\u26a0\ufe0f  Rate limited — polling paused ({mins}m {secs}s)",
+                None,
+                "",
+            )
+            banner.setEnabled_(False)
+            self.menu.addItem_(banner)
+            self.menu.addItem_(NSMenuItem.separatorItem())
+
         if not windows:
             loading = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
                 "Loading...", None, ""
@@ -397,6 +478,16 @@ class ClaudeMeterDelegate(NSObject):
         refresh_item.setTarget_(self)
         self.menu.addItem_(refresh_item)
 
+        # Polling toggle
+        polling_label = (
+            "Polling: On" if self.polling_enabled else "Polling: Off"
+        )
+        polling_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+            polling_label, "togglePolling:", ""
+        )
+        polling_item.setTarget_(self)
+        self.menu.addItem_(polling_item)
+
         # Refresh interval submenu
         interval_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
             "Refresh Interval", None, ""
@@ -420,6 +511,33 @@ class ClaudeMeterDelegate(NSObject):
 
         self.menu.addItem_(NSMenuItem.separatorItem())
 
+        # Recent logs submenu
+        logs_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+            "Recent Logs", None, ""
+        )
+        logs_submenu = NSMenu.alloc().init()
+        log_lines = list(log_buffer.records)
+        if not log_lines:
+            empty = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+                "(no logs yet)", None, ""
+            )
+            empty.setEnabled_(False)
+            logs_submenu.addItem_(empty)
+        else:
+            # Show most recent last (bottom of submenu)
+            for line in log_lines[-10:]:
+                # Truncate long lines for the menu
+                display = line if len(line) <= 80 else line[:77] + "..."
+                item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+                    display, None, ""
+                )
+                item.setEnabled_(False)
+                logs_submenu.addItem_(item)
+        logs_item.setSubmenu_(logs_submenu)
+        self.menu.addItem_(logs_item)
+
+        self.menu.addItem_(NSMenuItem.separatorItem())
+
         quit_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
             "Quit", "quit:", ""
         )
@@ -428,11 +546,36 @@ class ClaudeMeterDelegate(NSObject):
 
     @objc.typedSelector(b"v@:@")
     def tick_(self, timer):
+        if not self.polling_enabled or self._rate_limited:
+            return
         self._fetch_and_update()
 
     @objc.IBAction
     def refresh_(self, sender):
+        # Manual refresh clears rate-limit pause
+        self._clear_rate_limit()
         self._fetch_and_update()
+
+    @objc.IBAction
+    def togglePolling_(self, sender):
+        self.polling_enabled = not self.polling_enabled
+        if self.polling_enabled:
+            log.info("Polling enabled")
+            self._start_timer()
+        else:
+            log.info("Polling disabled")
+            if self.poll_timer:
+                self.poll_timer.invalidate()
+                self.poll_timer = None
+        # Show paused icon when disabled
+        if not self.polling_enabled:
+            self.status_item.setImage_(create_paused_icon())
+            self.status_item.setTitle_("")
+        elif self._last_primary:
+            self.status_item.setImage_(
+                create_gauge_icon(self._last_primary["utilization"])
+            )
+        self._build_menu(self._last_windows, self._last_primary)
 
     @objc.IBAction
     def setInterval_(self, sender):
@@ -443,6 +586,41 @@ class ClaudeMeterDelegate(NSObject):
     @objc.IBAction
     def quit_(self, sender):
         NSApplication.sharedApplication().terminate_(self)
+
+    def _enter_rate_limit_pause(self):
+        """Pause polling for RATE_LIMIT_PAUSE seconds after a 429."""
+        self._rate_limited = True
+        self._rate_limit_resume_time = time.time() + RATE_LIMIT_PAUSE
+        log.warning("Pausing polling for %d seconds due to rate limit", RATE_LIMIT_PAUSE)
+
+        # Grey out the icon
+        self.status_item.setImage_(create_paused_icon())
+        self.status_item.setTitle_("")
+        self._build_menu(self._last_windows, self._last_primary)
+
+        # Schedule automatic resume
+        if self._rate_limit_timer:
+            self._rate_limit_timer.invalidate()
+        self._rate_limit_timer = (
+            NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+                RATE_LIMIT_PAUSE, self, "rateLimitResume:", None, False
+            )
+        )
+
+    def _clear_rate_limit(self):
+        """Clear rate-limit state."""
+        self._rate_limited = False
+        self._rate_limit_resume_time = None
+        if self._rate_limit_timer:
+            self._rate_limit_timer.invalidate()
+            self._rate_limit_timer = None
+
+    @objc.typedSelector(b"v@:@")
+    def rateLimitResume_(self, timer):
+        """Called when the rate-limit pause expires."""
+        log.info("Rate-limit pause expired, resuming polling")
+        self._clear_rate_limit()
+        self._fetch_and_update()
 
     def _fetch_and_update(self):
         log.info("Fetching usage data...")
@@ -459,6 +637,9 @@ class ClaudeMeterDelegate(NSObject):
             return
 
         data = fetch_usage(token)
+        if data is RATE_LIMITED:
+            self._enter_rate_limit_pause()
+            return
         if not data:
             log.error("API fetch failed")
             self._show_with_last_data()
