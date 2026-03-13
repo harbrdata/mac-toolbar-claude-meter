@@ -7,4 +7,3 @@ dist/
 *.dmg
 *.egg-info/
 setup.py
-gauge_preview.py

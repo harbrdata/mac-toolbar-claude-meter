@@ -14,7 +14,14 @@ CONTENTS="$APP_DIR/Contents"
 MACOS_DIR="$CONTENTS/MacOS"
 RESOURCES="$CONTENTS/Resources"
 
-echo "=== Building $APP_NAME.dmg ==="
+# Determine version: use BUILD_VERSION env var, or extract from claude_meter.py
+if [ -n "$BUILD_VERSION" ]; then
+    VERSION="$BUILD_VERSION"
+else
+    VERSION=$(sed -n 's/^VERSION = "\(.*\)"/\1/p' "$SCRIPT_DIR/claude_meter.py")
+fi
+
+echo "=== Building $APP_NAME.dmg (v$VERSION) ==="
 echo ""
 
 # 1. Ensure venv and deps are installed
@@ -29,8 +36,8 @@ echo "Installing dependencies..."
 rm -rf "$BUILD_DIR" "$DIST_DIR"
 mkdir -p "$MACOS_DIR" "$RESOURCES"
 
-# 3. Copy the app source
-cp "$SCRIPT_DIR/claude_meter.py" "$RESOURCES/"
+# 3. Copy the app source (stamp version into the Python source)
+sed "s/^VERSION = \".*\"/VERSION = \"$VERSION\"/" "$SCRIPT_DIR/claude_meter.py" > "$RESOURCES/claude_meter.py"
 cp "$SCRIPT_DIR/requirements.txt" "$RESOURCES/"
 
 # 4. Bundle the venv's site-packages (only what we need)
@@ -140,7 +147,7 @@ INSTALL
 chmod +x "$DMG_DIR/Install.command"
 
 # 7. Create Info.plist
-cat > "$CONTENTS/Info.plist" << 'EOF'
+cat > "$CONTENTS/Info.plist" << EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -150,9 +157,9 @@ cat > "$CONTENTS/Info.plist" << 'EOF'
     <key>CFBundleIdentifier</key>
     <string>com.local.claude-o-meter</string>
     <key>CFBundleVersion</key>
-    <string>1.0.0</string>
+    <string>$VERSION</string>
     <key>CFBundleShortVersionString</key>
-    <string>1.0.0</string>
+    <string>$VERSION</string>
     <key>CFBundleExecutable</key>
     <string>launch</string>
     <key>LSUIElement</key>
@@ -160,6 +167,8 @@ cat > "$CONTENTS/Info.plist" << 'EOF'
     <key>LSBackgroundOnly</key>
     <false/>
     <key>NSHighResolutionCapable</key>
+    <true/>
+    <key>NSMenuBarItemProviding</key>
     <true/>
 </dict>
 </plist>

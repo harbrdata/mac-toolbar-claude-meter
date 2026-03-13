@@ -176,7 +176,12 @@ Logs are written to `/tmp/claude_meter.log` when running via the `.app` bundle o
 
 ## Troubleshooting
 
-- **Menu bar icon not visible:** Your menu bar may be full. Hold Cmd and drag other icons to make space, or use a menu bar manager like Bartender or Ice.
+- **Menu bar icon not visible (macOS 26+):** macOS Tahoe requires apps to be allowed in the menu bar. Go to **System Settings > Control Center > Menu Bar Only** and find Claude-o-Meter in the list — make sure it is set to "Show in Menu Bar". If it doesn't appear in the list, try removing and re-installing the app, then launching it once so the system registers it.
+- **Menu bar icon not visible (macOS 15 and earlier):** Your menu bar may be full. Hold Cmd and drag other icons to make space, or use a menu bar manager like Bartender or Ice.
 - **Greyed-out "||" icon:** The app is either rate-limited (auto-resumes after 5 minutes) or polling is turned off. Open the dropdown to see which.
 - **"Loading..." in dropdown:** The API may be slow. Wait for the next refresh cycle.
 - **"!" error icon:** Run `claude login` to refresh your credentials.
+
+## License
+
+Copyright (c) 2025-2026 Harbr Data. All rights reserved.

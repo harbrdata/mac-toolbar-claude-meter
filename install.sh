@@ -45,6 +45,10 @@ cat > "$APP_DIR/Contents/Info.plist" << EOF
     <true/>
     <key>LSBackgroundOnly</key>
     <false/>
+    <key>NSHighResolutionCapable</key>
+    <true/>
+    <key>NSMenuBarItemProviding</key>
+    <true/>
 </dict>
 </plist>
 EOF

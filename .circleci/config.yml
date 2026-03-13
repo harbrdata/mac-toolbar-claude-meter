@@ -1,0 +1,67 @@
+version: 2.1
+
+orbs:
+  gh: circleci/github-cli@2.1.1
+
+jobs:
+  build-dmg:
+    macos:
+      xcode: "15.4.0"
+    resource_class: macos.m1.medium.gen1
+    steps:
+      - checkout
+      - add_ssh_keys:
+          fingerprints:
+            - "79:8b:52:30:36:e2:7b:8b:9d:5c:9d:40:87:33:a1:f6"
+
+      - run:
+          name: Extract version from tag
+          command: |
+            # CIRCLE_TAG is e.g. "v1.2.3" — strip the leading "v"
+            VERSION="${CIRCLE_TAG#v}"
+            echo "Building version: $VERSION"
+            echo "export BUILD_VERSION=$VERSION" >> "$BASH_ENV"
+
+      - run:
+          name: Install Python dependencies
+          command: |
+            python3 -m venv .venv
+            .venv/bin/pip install --upgrade pip
+            .venv/bin/pip install -r requirements.txt
+
+      - run:
+          name: Build DMG
+          command: |
+            chmod +x build_dmg.sh
+            ./build_dmg.sh
+
+      - run:
+          name: Rename DMG with version
+          command: |
+            mv dist/Claude-o-Meter.dmg "dist/Claude-o-Meter-${BUILD_VERSION}.dmg"
+
+      - store_artifacts:
+          path: dist/
+          destination: dmg
+
+      - gh/install
+      - run:
+          name: Create GitHub release
+          command: |
+            gh release create "${CIRCLE_TAG}" \
+              "dist/Claude-o-Meter-${BUILD_VERSION}.dmg" \
+              --repo "${CIRCLE_PROJECT_USERNAME}/${CIRCLE_PROJECT_REPONAME}" \
+              --title "Claude-o-Meter ${BUILD_VERSION}" \
+              --generate-notes
+
+workflows:
+  release:
+    jobs:
+      - build-dmg:
+          context:
+            - github-developers-robot
+          filters:
+            branches:
+              ignore: /.*/
+            tags:
+              only: /^v\d+\.\d+\.\d+$/
