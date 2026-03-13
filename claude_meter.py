@@ -248,39 +248,50 @@ def usage_color(utilization: float) -> NSColor:
 # ---------------------------------------------------------------------------
 
 
-def create_gauge_icon(utilization: float, size: int = 18) -> NSImage:
-    """Draw a circular progress ring with percentage in the center."""
+# Gauge arc constants (match logo dial: 7 o'clock to 5 o'clock)
+_GAUGE_START_DEG = 225
+_GAUGE_SWEEP = 270
+
+
+def _draw_pie_wedge(cx, cy, radius, inner_r, start_deg, sweep, color):
+    """Draw a filled pie/annular wedge."""
+    path = NSBezierPath.bezierPath()
+    end_deg = start_deg - sweep
+    path.appendBezierPathWithArcWithCenter_radius_startAngle_endAngle_clockwise_(
+        (cx, cy), radius, start_deg, end_deg, True
+    )
+    path.appendBezierPathWithArcWithCenter_radius_startAngle_endAngle_clockwise_(
+        (cx, cy), inner_r, end_deg, start_deg, False
+    )
+    path.closePath()
+    color.setFill()
+    path.fill()
+
+
+def create_gauge_icon(utilization: float, size: int = 24) -> NSImage:
+    """Draw a filled pie gauge (7 to 5 o'clock) with percentage in the center."""
     img = NSImage.alloc().initWithSize_((size, size))
     img.lockFocus()
 
     cx, cy = size / 2, size / 2
-    radius = (size / 2) - 1.5
-    line_width = 2.0
+    radius = size * 0.46
+    inner_r = radius * 0.65
 
-    # Background ring (full circle)
-    track = NSBezierPath.bezierPath()
-    track.appendBezierPathWithArcWithCenter_radius_startAngle_endAngle_(
-        (cx, cy), radius, 0, 360
-    )
-    NSColor.darkGrayColor().setStroke()
-    track.setLineWidth_(line_width)
-    track.stroke()
+    # Background wedge
+    bg_clr = NSColor.colorWithCalibratedRed_green_blue_alpha_(0.25, 0.25, 0.25, 1.0)
+    _draw_pie_wedge(cx, cy, radius, inner_r, _GAUGE_START_DEG, _GAUGE_SWEEP, bg_clr)
 
-    # Filled ring (starts at top = 90°, goes clockwise)
+    # Filled wedge
     if utilization > 0:
-        end_angle = 90 - (min(utilization, 1.0) * 360)
-        arc = NSBezierPath.bezierPath()
-        arc.appendBezierPathWithArcWithCenter_radius_startAngle_endAngle_clockwise_(
-            (cx, cy), radius, 90, end_angle, True
+        fill_sweep = min(utilization, 1.0) * _GAUGE_SWEEP
+        _draw_pie_wedge(
+            cx, cy, radius, inner_r, _GAUGE_START_DEG, fill_sweep,
+            usage_color(utilization),
         )
-        usage_color(utilization).setStroke()
-        arc.setLineWidth_(line_width)
-        arc.setLineCapStyle_(1)  # round cap
-        arc.stroke()
 
-    # Percentage text in center
+    # Percentage text centered
     pct = f"{int(utilization * 100)}"
-    font_size = size * 0.28
+    font_size = size * 0.40
     attrs = {
         NSFontAttributeName: NSFont.boldSystemFontOfSize_(font_size),
         NSForegroundColorAttributeName: NSColor.whiteColor(),
@@ -288,7 +299,7 @@ def create_gauge_icon(utilization: float, size: int = 18) -> NSImage:
     s = NSString.stringWithString_(pct)
     s_size = s.sizeWithAttributes_(attrs)
     s.drawAtPoint_withAttributes_(
-        (cx - s_size.width / 2, cy - s_size.height / 2), attrs
+        (cx - s_size.width / 2, cy - s_size.height / 2 + size * 0.04), attrs
     )
 
     img.unlockFocus()
@@ -296,24 +307,20 @@ def create_gauge_icon(utilization: float, size: int = 18) -> NSImage:
     return img
 
 
-def create_paused_icon(size: int = 18) -> NSImage:
-    """Draw a greyed-out gauge icon indicating polling is paused."""
+def create_paused_icon(size: int = 24) -> NSImage:
+    """Draw a greyed-out pie gauge indicating polling is paused."""
     img = NSImage.alloc().initWithSize_((size, size))
     img.lockFocus()
 
     cx, cy = size / 2, size / 2
-    radius = (size / 2) - 2.5
-    line_width = 2.0
+    radius = size * 0.46
+    inner_r = radius * 0.65
 
-    track = NSBezierPath.bezierPath()
-    track.appendBezierPathWithArcWithCenter_radius_startAngle_endAngle_(
-        (cx, cy), radius, 0, 360
-    )
-    NSColor.grayColor().setStroke()
-    track.setLineWidth_(line_width)
-    track.stroke()
+    # Grey wedge
+    grey = NSColor.colorWithCalibratedRed_green_blue_alpha_(0.35, 0.35, 0.35, 1.0)
+    _draw_pie_wedge(cx, cy, radius, inner_r, _GAUGE_START_DEG, _GAUGE_SWEEP, grey)
 
-    # "⏸" text in center
+    # "||" text in center
     attrs = {
         NSFontAttributeName: NSFont.boldSystemFontOfSize_(size * 0.35),
         NSForegroundColorAttributeName: NSColor.grayColor(),
@@ -321,7 +328,7 @@ def create_paused_icon(size: int = 18) -> NSImage:
     s = NSString.stringWithString_("||")
     s_size = s.sizeWithAttributes_(attrs)
     s.drawAtPoint_withAttributes_(
-        (cx - s_size.width / 2, cy - s_size.height / 2), attrs
+        (cx - s_size.width / 2, cy - s_size.height / 2 + size * 0.04), attrs
     )
 
     img.unlockFocus()
@@ -329,30 +336,28 @@ def create_paused_icon(size: int = 18) -> NSImage:
     return img
 
 
-def create_error_icon(size: int = 18) -> NSImage:
-    """Draw an error/warning icon."""
+def create_error_icon(size: int = 24) -> NSImage:
+    """Draw an error/warning pie gauge icon."""
     img = NSImage.alloc().initWithSize_((size, size))
     img.lockFocus()
 
     cx, cy = size / 2, size / 2
-    radius = (size / 2) - 2
+    radius = size * 0.46
+    inner_r = radius * 0.65
 
-    circle = NSBezierPath.bezierPathWithOvalInRect_(
-        ((cx - radius, cy - radius), (radius * 2, radius * 2))
-    )
-    NSColor.darkGrayColor().setStroke()
-    circle.setLineWidth_(1.5)
-    circle.stroke()
+    # Dark wedge
+    dark = NSColor.colorWithCalibratedRed_green_blue_alpha_(0.25, 0.25, 0.25, 1.0)
+    _draw_pie_wedge(cx, cy, radius, inner_r, _GAUGE_START_DEG, _GAUGE_SWEEP, dark)
 
-    # Draw "!" in center
+    # "!" in center
     attrs = {
-        NSFontAttributeName: NSFont.boldSystemFontOfSize_(10),
+        NSFontAttributeName: NSFont.boldSystemFontOfSize_(size * 0.45),
         NSForegroundColorAttributeName: NSColor.orangeColor(),
     }
     s = NSString.stringWithString_("!")
     s_size = s.sizeWithAttributes_(attrs)
     s.drawAtPoint_withAttributes_(
-        (cx - s_size.width / 2, cy - s_size.height / 2), attrs
+        (cx - s_size.width / 2, cy - s_size.height / 2 + size * 0.04), attrs
     )
 
     img.unlockFocus()
@@ -677,7 +682,7 @@ class ClaudeMeterDelegate(NSObject):
                     NSForegroundColorAttributeName: NSColor.labelColor(),
                 },
             ),
-            "ApplicationIcon": create_logo_icon(64),
+            "ApplicationIcon": create_gauge_icon(0.0, size=128),
         })
 
     def _enter_rate_limit_pause(self, retry_after: int = 0):
