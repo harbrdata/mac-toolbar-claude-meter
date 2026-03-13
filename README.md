@@ -6,6 +6,24 @@ Displays a color-coded ring gauge in the menu bar showing your current 5-hour us
 
 **macOS only** — requires macOS 13 (Ventura) or later.
 
+## Quick start
+
+Requires Python 3.10+ and an active Claude Code login (`claude login`).
+
+```bash
+git clone git@github.com:harbrdata/mac-toolbar-claude-meter.git
+cd mac-toolbar-claude-meter
+./install.sh
+```
+
+This sets up the venv, builds the `.app` bundle, installs a Launch Agent, and starts the app. It will auto-start on every login.
+
+To uninstall:
+
+```bash
+./uninstall.sh
+```
+
 ## Features
 
 - Ring gauge icon with percentage in the menu bar (green/yellow/orange/red)
@@ -15,28 +33,7 @@ Displays a color-coded ring gauge in the menu bar showing your current 5-hour us
 - Reads credentials from your existing `claude login` session
 - No dock icon — runs purely in the menu bar
 
-## How authentication works
-
-Claude-o-Meter reads the OAuth credentials that the Claude Code CLI stores in your macOS Keychain. When you run `claude login`, Claude Code saves an access token and refresh token to a Keychain entry named `Claude Code-credentials`. This app reads that entry using the `security` command-line tool (the same way any app reads Keychain items).
-
-The app uses the access token to call the Anthropic usage API (`https://api.anthropic.com/api/oauth/usage`). If the token has expired, it automatically refreshes it using the stored refresh token.
-
-**No credentials are stored, transmitted, or logged by this app** — it only reads what Claude Code already put in your Keychain. If you revoke your Claude Code session or log out, the app will show an error icon until you run `claude login` again.
-
-## Prerequisites
-
-- Python 3.10+
-- An active Claude Code login (`claude login`)
-
-## Setup
-
-```bash
-cd my-claude-meter
-python3 -m venv .venv
-.venv/bin/pip install -r requirements.txt
-```
-
-## Running
+## Running manually
 
 ### From Terminal
 
@@ -54,59 +51,17 @@ A pre-built `.app` bundle is included for convenience:
 open Claude-o-Meter.app
 ```
 
-To rebuild the `.app` bundle after making changes, run:
-
-```bash
-APP_DIR="Claude-o-Meter.app"
-mkdir -p "$APP_DIR/Contents/MacOS" "$APP_DIR/Contents/Resources"
-
-cat > "$APP_DIR/Contents/Info.plist" << 'EOF'
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>CFBundleName</key>
-    <string>Claude-o-Meter</string>
-    <key>CFBundleIdentifier</key>
-    <string>com.local.claude-o-meter</string>
-    <key>CFBundleVersion</key>
-    <string>1.0.0</string>
-    <key>CFBundleExecutable</key>
-    <string>launch</string>
-    <key>LSUIElement</key>
-    <true/>
-</dict>
-</plist>
-EOF
-
-cat > "$APP_DIR/Contents/MacOS/launch" << SCRIPT
-#!/bin/bash
-exec $(pwd)/.venv/bin/python3 $(pwd)/claude_meter.py 2>/tmp/claude_meter.log
-SCRIPT
-chmod +x "$APP_DIR/Contents/MacOS/launch"
-```
-
 ## Run on startup
 
-### Option 1: Install script (recommended)
+The install script (above) is the recommended approach. Alternatives:
 
-```bash
-./install.sh
-```
-
-This sets up the venv, builds the `.app` bundle, installs a Launch Agent, and starts the app. It will auto-start on every login. To uninstall:
-
-```bash
-./uninstall.sh
-```
-
-### Option 2: Login Items
+### Login Items
 
 1. Open **System Settings > General > Login Items**
 2. Click **+** under "Open at Login"
 3. Navigate to this folder and select `Claude-o-Meter.app`
 
-### Option 3: Manual Launch Agent
+### Manual Launch Agent
 
 Create a Launch Agent plist:
 
@@ -143,6 +98,48 @@ To stop and unload:
 ```bash
 launchctl unload ~/Library/LaunchAgents/com.local.claude-o-meter.plist
 ```
+
+## Rebuilding the .app bundle
+
+After making changes, rebuild the `.app` bundle:
+
+```bash
+APP_DIR="Claude-o-Meter.app"
+mkdir -p "$APP_DIR/Contents/MacOS" "$APP_DIR/Contents/Resources"
+
+cat > "$APP_DIR/Contents/Info.plist" << 'EOF'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleName</key>
+    <string>Claude-o-Meter</string>
+    <key>CFBundleIdentifier</key>
+    <string>com.local.claude-o-meter</string>
+    <key>CFBundleVersion</key>
+    <string>1.0.0</string>
+    <key>CFBundleExecutable</key>
+    <string>launch</string>
+    <key>LSUIElement</key>
+    <true/>
+</dict>
+</plist>
+EOF
+
+cat > "$APP_DIR/Contents/MacOS/launch" << SCRIPT
+#!/bin/bash
+exec $(pwd)/.venv/bin/python3 $(pwd)/claude_meter.py 2>/tmp/claude_meter.log
+SCRIPT
+chmod +x "$APP_DIR/Contents/MacOS/launch"
+```
+
+## How authentication works
+
+Claude-o-Meter reads the OAuth credentials that the Claude Code CLI stores in your macOS Keychain. When you run `claude login`, Claude Code saves an access token and refresh token to a Keychain entry named `Claude Code-credentials`. This app reads that entry using the `security` command-line tool (the same way any app reads Keychain items).
+
+The app uses the access token to call the Anthropic usage API (`https://api.anthropic.com/api/oauth/usage`). If the token has expired, it automatically refreshes it using the stored refresh token.
+
+**No credentials are stored, transmitted, or logged by this app** — it only reads what Claude Code already put in your Keychain. If you revoke your Claude Code session or log out, the app will show an error icon until you run `claude login` again.
 
 ## Logs
 
