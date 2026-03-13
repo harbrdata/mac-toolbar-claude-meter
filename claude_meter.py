@@ -57,6 +57,8 @@ RATE_LIMIT_PAUSE = 300  # seconds (5 minutes)
 # Constants
 # ---------------------------------------------------------------------------
 
+VERSION = "1.0.0"
+
 KEYCHAIN_SERVICE = "Claude Code-credentials"
 USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
 USER_AGENT = "claude-code/2.1.70"
@@ -396,6 +398,7 @@ class ClaudeMeterDelegate(NSObject):
         self._rate_limited = False
         self._rate_limit_resume_time = None
         self._rate_limit_timer = None
+        self._rate_limit_countdown_timer = None
 
         self.menu = NSMenu.alloc().init()
         self.status_item.setMenu_(self.menu)
@@ -424,7 +427,7 @@ class ClaudeMeterDelegate(NSObject):
         self.menu.removeAllItems()
 
         header = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
-            "Claude-o-Meter", None, ""
+            f"Claude-o-Meter v{VERSION}", None, ""
         )
         header.setEnabled_(False)
         self.menu.addItem_(header)
@@ -607,6 +610,15 @@ class ClaudeMeterDelegate(NSObject):
             )
         )
 
+        # Update the countdown every 10 seconds
+        if self._rate_limit_countdown_timer:
+            self._rate_limit_countdown_timer.invalidate()
+        self._rate_limit_countdown_timer = (
+            NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+                10, self, "rateLimitCountdown:", None, True
+            )
+        )
+
     def _clear_rate_limit(self):
         """Clear rate-limit state."""
         self._rate_limited = False
@@ -614,6 +626,15 @@ class ClaudeMeterDelegate(NSObject):
         if self._rate_limit_timer:
             self._rate_limit_timer.invalidate()
             self._rate_limit_timer = None
+        if self._rate_limit_countdown_timer:
+            self._rate_limit_countdown_timer.invalidate()
+            self._rate_limit_countdown_timer = None
+
+    @objc.typedSelector(b"v@:@")
+    def rateLimitCountdown_(self, timer):
+        """Refresh the menu to update the rate-limit countdown display."""
+        if self._rate_limited:
+            self._build_menu(self._last_windows, self._last_primary)
 
     @objc.typedSelector(b"v@:@")
     def rateLimitResume_(self, timer):
