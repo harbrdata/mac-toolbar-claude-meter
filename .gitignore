@@ -1,3 +1,4 @@
+.build_venv/
 .venv/
 __pycache__/
 *.pyc
@@ -6,4 +7,5 @@ build/
 dist/
 *.dmg
 *.egg-info/
+*.spec
 setup.py

@@ -81,6 +81,11 @@ THRESHOLD_CRITICAL = 0.95
 
 LOGO_ICON_HEIGHT = 80
 
+LAUNCH_AGENT_LABEL = "com.local.claude-o-meter"
+LAUNCH_AGENT_PLIST = os.path.expanduser(
+    f"~/Library/LaunchAgents/{LAUNCH_AGENT_LABEL}.plist"
+)
+
 # ---------------------------------------------------------------------------
 # Keychain
 # ---------------------------------------------------------------------------
@@ -380,6 +385,63 @@ def create_logo_icon(height: int = 18) -> NSImage:
 
 
 # ---------------------------------------------------------------------------
+# Launch Agent (Start at Login)
+# ---------------------------------------------------------------------------
+
+
+def is_login_item_enabled() -> bool:
+    """Check if the Launch Agent plist exists."""
+    return os.path.isfile(LAUNCH_AGENT_PLIST)
+
+
+def enable_login_item():
+    """Install a Launch Agent so the app starts on login."""
+    os.makedirs(os.path.dirname(LAUNCH_AGENT_PLIST), exist_ok=True)
+    plist_content = f"""\
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" \
+"http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>{LAUNCH_AGENT_LABEL}</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>open</string>
+        <string>-a</string>
+        <string>Claude-o-Meter</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>StandardErrorPath</key>
+    <string>/tmp/claude_meter.log</string>
+</dict>
+</plist>"""
+    with open(LAUNCH_AGENT_PLIST, "w") as f:
+        f.write(plist_content)
+    uid = os.getuid()
+    subprocess.run(
+        ["launchctl", "bootstrap", f"gui/{uid}", LAUNCH_AGENT_PLIST],
+        capture_output=True,
+    )
+    log.info("Login item enabled")
+
+
+def disable_login_item():
+    """Remove the Launch Agent."""
+    uid = os.getuid()
+    subprocess.run(
+        ["launchctl", "bootout", f"gui/{uid}/{LAUNCH_AGENT_LABEL}"],
+        capture_output=True,
+    )
+    try:
+        os.remove(LAUNCH_AGENT_PLIST)
+    except FileNotFoundError:
+        pass
+    log.info("Login item disabled")
+
+
+# ---------------------------------------------------------------------------
 # Styled menu helpers
 # ---------------------------------------------------------------------------
 
@@ -573,6 +635,15 @@ class ClaudeMeterDelegate(NSObject):
         interval_item.setSubmenu_(interval_submenu)
         self.menu.addItem_(interval_item)
 
+        # Start at Login toggle
+        login_enabled = is_login_item_enabled()
+        login_label = "Start at Login: On" if login_enabled else "Start at Login: Off"
+        login_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+            login_label, "toggleLoginItem:", ""
+        )
+        login_item.setTarget_(self)
+        self.menu.addItem_(login_item)
+
         self.menu.addItem_(NSMenuItem.separatorItem())
 
         # Recent logs submenu
@@ -652,6 +723,14 @@ class ClaudeMeterDelegate(NSObject):
         self.poll_interval = sender.tag()
         self._start_timer()
         log.info("Poll interval changed to %ds", self.poll_interval)
+
+    @objc.IBAction
+    def toggleLoginItem_(self, sender):
+        if is_login_item_enabled():
+            disable_login_item()
+        else:
+            enable_login_item()
+        self._build_menu(self._last_windows, self._last_primary)
 
     @objc.IBAction
     def quit_(self, sender):

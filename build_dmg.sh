@@ -1,18 +1,13 @@
 #!/bin/bash
 # Build a self-contained Claude-o-Meter.dmg for distribution.
-# The DMG contains a standalone .app bundle with all dependencies embedded.
+# Uses PyInstaller to embed the Python interpreter + all dependencies so
+# the app runs on any Mac without requiring a separate Python install.
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 APP_NAME="Claude-o-Meter"
-BUILD_DIR="$SCRIPT_DIR/build"
 DIST_DIR="$SCRIPT_DIR/dist"
-DMG_DIR="$DIST_DIR/dmg"
-VENV_DIR="$SCRIPT_DIR/.venv"
-APP_DIR="$DMG_DIR/$APP_NAME.app"
-CONTENTS="$APP_DIR/Contents"
-MACOS_DIR="$CONTENTS/MacOS"
-RESOURCES="$CONTENTS/Resources"
+BUILD_VENV="$SCRIPT_DIR/.build_venv"
 
 # Determine version: use BUILD_VERSION env var, or read from VERSION file
 if [ -n "$BUILD_VERSION" ]; then
@@ -24,167 +19,119 @@ fi
 echo "=== Building $APP_NAME.dmg (v$VERSION) ==="
 echo ""
 
-# 1. Ensure venv and deps are installed
-if [ ! -d "$VENV_DIR" ]; then
-    echo "Creating virtual environment..."
-    python3 -m venv "$VENV_DIR"
-fi
-echo "Installing dependencies..."
-"$VENV_DIR/bin/pip" install --quiet --index-url https://pypi.org/simple/ -r "$SCRIPT_DIR/requirements.txt"
-
-# 2. Clean previous build
-rm -rf "$BUILD_DIR" "$DIST_DIR"
-mkdir -p "$MACOS_DIR" "$RESOURCES"
-
-# 3. Copy the app source
-cp "$SCRIPT_DIR/claude_meter.py" "$RESOURCES/claude_meter.py"
-cp "$SCRIPT_DIR/VERSION" "$RESOURCES/VERSION"
-cp "$SCRIPT_DIR/logo.png" "$RESOURCES/logo.png"
-cp "$SCRIPT_DIR/requirements.txt" "$RESOURCES/"
-
-# 4. Bundle the venv's site-packages (only what we need)
-echo "Bundling Python dependencies..."
-SITE_PACKAGES="$RESOURCES/lib"
-mkdir -p "$SITE_PACKAGES"
-
-# Copy the needed packages from the venv
-VENV_SITE=$("$VENV_DIR/bin/python3" -c "import site; print(site.getsitepackages()[0])")
-for pkg in requests urllib3 charset_normalizer certifi idna objc AppKit Foundation CoreFoundation PyObjCTools; do
-    if [ -d "$VENV_SITE/$pkg" ]; then
-        cp -R "$VENV_SITE/$pkg" "$SITE_PACKAGES/"
+# 1. Find a stable system Python for building.
+# Prefer /usr/local/bin or /opt/homebrew/bin (Homebrew) over /usr/bin (macOS
+# system Python, often old). Avoid pyenv/asdf shims — they may not be present
+# on end-user machines and PyInstaller needs a real interpreter path.
+BUILD_PYTHON=""
+for candidate in /usr/local/bin/python3 /opt/homebrew/bin/python3 /usr/bin/python3; do
+    if [ -x "$candidate" ]; then
+        BUILD_PYTHON="$candidate"
+        break
     fi
 done
-# Also copy .dylib files for PyObjC
-find "$VENV_SITE" -maxdepth 2 -name "*.so" -path "*/objc/*" -exec cp {} "$SITE_PACKAGES/objc/" \; 2>/dev/null || true
+if [ -z "$BUILD_PYTHON" ]; then
+    echo "ERROR: No system Python3 found"
+    exit 1
+fi
+echo "Using $BUILD_PYTHON ($($BUILD_PYTHON --version 2>&1))"
 
-# Copy top-level .so/.dylib files for pyobjc framework bindings
-for framework in AppKit Foundation CoreFoundation; do
-    find "$VENV_SITE/$framework" -name "*.so" 2>/dev/null | while read f; do
-        cp "$f" "$SITE_PACKAGES/$framework/" 2>/dev/null || true
-    done
-done
+# 2. Create a clean build venv with all dependencies + PyInstaller
+rm -rf "$BUILD_VENV"
+"$BUILD_PYTHON" -m venv "$BUILD_VENV"
+echo "Installing dependencies..."
+"$BUILD_VENV/bin/pip" install --quiet --index-url https://pypi.org/simple/ \
+    -r "$SCRIPT_DIR/requirements.txt" \
+    pyinstaller
 
-# 5. Create the launcher script
-cat > "$MACOS_DIR/launch" << 'LAUNCHER'
+# 3. Clean previous build artifacts
+rm -rf "$SCRIPT_DIR/build" "$DIST_DIR"
+
+# 4. Build self-contained .app with PyInstaller
+echo "Building app bundle with PyInstaller..."
+"$BUILD_VENV/bin/pyinstaller" \
+    --windowed \
+    --name "$APP_NAME" \
+    --icon "$SCRIPT_DIR/AppIcon.icns" \
+    --add-data "$SCRIPT_DIR/VERSION:." \
+    --add-data "$SCRIPT_DIR/logo.png:." \
+    --osx-bundle-identifier com.local.claude-o-meter \
+    --distpath "$DIST_DIR" \
+    --workpath "$SCRIPT_DIR/build" \
+    --noconfirm \
+    "$SCRIPT_DIR/claude_meter.py"
+
+APP_DIR="$DIST_DIR/$APP_NAME.app"
+CONTENTS="$APP_DIR/Contents"
+
+# 5. Patch Info.plist — add LSUIElement (hide dock icon), version, menu bar keys
+/usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" "$CONTENTS/Info.plist"
+/usr/libexec/PlistBuddy -c "Add :CFBundleVersion string $VERSION" "$CONTENTS/Info.plist" 2>/dev/null \
+    || /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $VERSION" "$CONTENTS/Info.plist"
+/usr/libexec/PlistBuddy -c "Add :LSUIElement bool true" "$CONTENTS/Info.plist" 2>/dev/null || true
+/usr/libexec/PlistBuddy -c "Add :LSBackgroundOnly bool false" "$CONTENTS/Info.plist" 2>/dev/null || true
+/usr/libexec/PlistBuddy -c "Add :NSMenuBarItemProviding bool true" "$CONTENTS/Info.plist" 2>/dev/null || true
+
+# 6. Create an install/upgrade helper script next to the .app in the DMG.
+# This handles quitting a running instance before replacing it.
+DMG_STAGE="$DIST_DIR/dmg"
+mkdir -p "$DMG_STAGE"
+mv "$APP_DIR" "$DMG_STAGE/"
+APP_DIR="$DMG_STAGE/$APP_NAME.app"
+
+cat > "$DMG_STAGE/Install.command" << 'INSTALL_SCRIPT'
 #!/bin/bash
-# Self-contained launcher for Claude-o-Meter
-DIR="$(cd "$(dirname "$0")/.." && pwd)"
-RESOURCES="$DIR/Resources"
-
-export PYTHONPATH="$RESOURCES/lib:$PYTHONPATH"
-exec /usr/bin/env python3 "$RESOURCES/claude_meter.py" 2>/tmp/claude_meter.log
-LAUNCHER
-chmod +x "$MACOS_DIR/launch"
-
-# 6. Create install helper script (shown in DMG)
-cat > "$DMG_DIR/Install.command" << 'INSTALL'
-#!/bin/bash
-# Install Claude-o-Meter: copies app to /Applications and sets up login launch.
+# Install or upgrade Claude-o-Meter.
 set -e
 
 APP_NAME="Claude-o-Meter"
 DMG_APP="$(cd "$(dirname "$0")" && pwd)/$APP_NAME.app"
-INSTALL_DIR="/Applications"
-PLIST_LABEL="com.local.claude-o-meter"
-PLIST_PATH="$HOME/Library/LaunchAgents/$PLIST_LABEL.plist"
 
 echo "=== Installing $APP_NAME ==="
 echo ""
 
-# Stop any running instance
-echo "Stopping any running instances..."
-osascript -e "quit app \"$APP_NAME\"" 2>/dev/null || true
-pkill -f "claude_meter.py" 2>/dev/null || true
-pkill -f "$APP_NAME" 2>/dev/null || true
-launchctl bootout "gui/$(id -u)/$PLIST_LABEL" 2>/dev/null || true
-sleep 1
-pkill -9 -f "claude_meter.py" 2>/dev/null || true
-pkill -9 -f "$APP_NAME" 2>/dev/null || true
+# Quit any running instance
+if pgrep -xq "$APP_NAME"; then
+    echo "Quitting running instance..."
+    osascript -e "quit app \"$APP_NAME\"" 2>/dev/null || true
+    sleep 2
+    pkill -x "$APP_NAME" 2>/dev/null || true
+    sleep 1
+fi
 
-# Remove old launch agent plist
-rm -f "$PLIST_PATH"
+# Copy to /Applications
+echo "Copying to /Applications..."
+rm -rf "/Applications/$APP_NAME.app"
+cp -R "$DMG_APP" "/Applications/"
 
-# Copy app to /Applications
-echo "Copying to $INSTALL_DIR..."
-rm -rf "$INSTALL_DIR/$APP_NAME.app"
-cp -R "$DMG_APP" "$INSTALL_DIR/"
-
-# Install launch agent for auto-start on login
-echo "Setting up auto-start on login..."
-mkdir -p "$(dirname "$PLIST_PATH")"
-cat > "$PLIST_PATH" << EOF
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>Label</key>
-    <string>$PLIST_LABEL</string>
-    <key>ProgramArguments</key>
-    <array>
-        <string>open</string>
-        <string>-a</string>
-        <string>$INSTALL_DIR/$APP_NAME.app</string>
-    </array>
-    <key>RunAtLoad</key>
-    <true/>
-    <key>StandardErrorPath</key>
-    <string>/tmp/claude_meter.log</string>
-</dict>
-</plist>
-EOF
-
-# Start now
-echo "Starting $APP_NAME..."
-launchctl bootstrap "gui/$(id -u)" "$PLIST_PATH"
+# Launch the new version
+echo "Launching $APP_NAME..."
+open -a "$APP_NAME"
 
 echo ""
-echo "Done! $APP_NAME is running and will start automatically on login."
-echo "You can now eject the disk image."
-echo ""
-echo "To uninstall later:"
-echo "  launchctl bootout gui/$(id -u)/$PLIST_LABEL"
-echo "  rm -f $PLIST_PATH"
-echo "  rm -rf $INSTALL_DIR/$APP_NAME.app"
-INSTALL
-chmod +x "$DMG_DIR/Install.command"
+echo "Done! $APP_NAME is installed and running."
+echo "You can now close this window and eject the disk image."
+INSTALL_SCRIPT
+chmod +x "$DMG_STAGE/Install.command"
 
-# 7. Create Info.plist
-cat > "$CONTENTS/Info.plist" << EOF
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>CFBundleName</key>
-    <string>Claude-o-Meter</string>
-    <key>CFBundleIdentifier</key>
-    <string>com.local.claude-o-meter</string>
-    <key>CFBundleVersion</key>
-    <string>$VERSION</string>
-    <key>CFBundleShortVersionString</key>
-    <string>$VERSION</string>
-    <key>CFBundleExecutable</key>
-    <string>launch</string>
-    <key>LSUIElement</key>
-    <true/>
-    <key>LSBackgroundOnly</key>
-    <false/>
-    <key>NSHighResolutionCapable</key>
-    <true/>
-    <key>NSMenuBarItemProviding</key>
-    <true/>
-</dict>
-</plist>
-EOF
+# 7. Add Applications symlink for drag-to-install
+ln -s /Applications "$DMG_STAGE/Applications"
 
 # 8. Create the DMG
 echo "Creating DMG..."
 DMG_PATH="$DIST_DIR/$APP_NAME.dmg"
+
 hdiutil create -volname "$APP_NAME" \
-    -srcfolder "$DMG_DIR" \
+    -srcfolder "$DMG_STAGE" \
     -ov -format UDZO \
     "$DMG_PATH"
+
+# 9. Clean up build artifacts
+rm -rf "$BUILD_VENV" "$SCRIPT_DIR/Claude-o-Meter.spec"
 
 echo ""
 echo "=== Done! ==="
 echo "DMG created at: $DMG_PATH"
 echo "Size: $(du -h "$DMG_PATH" | cut -f1)"
+echo ""
+echo "Users can install by opening the DMG and dragging $APP_NAME to Applications."
