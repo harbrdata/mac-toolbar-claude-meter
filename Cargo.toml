@@ -1,0 +1,42 @@
+[package]
+name = "claude-o-meter"
+version = "1.1.0"
+edition = "2024"
+description = "macOS menu bar app showing Claude Code plan usage"
+license = "Proprietary"
+
+[[bin]]
+name = "claude-o-meter"
+path = "src/main.rs"
+
+[dependencies]
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", features = ["NSString", "NSAttributedString", "NSTimer", "NSDictionary", "NSThread"] }
+objc2-app-kit = { version = "0.3", features = [
+    "NSApplication",
+    "NSStatusBar",
+    "NSStatusItem",
+    "NSStatusBarButton",
+    "NSMenu",
+    "NSMenuItem",
+    "NSImage",
+    "NSImageView",
+    "NSBezierPath",
+    "NSColor",
+    "NSFont",
+    "NSView",
+    "NSGraphicsContext",
+    "NSGraphics",
+    "NSRunningApplication",
+    "NSText",
+    "NSEvent",
+] }
+ureq = { version = "3", features = ["json"] }
+serde_json = "1"
+chrono = "0.4"
+libc = "0.2"
+
+[profile.release]
+strip = true
+lto = true
+opt-level = "z"

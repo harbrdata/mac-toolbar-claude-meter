@@ -2,24 +2,8 @@ version: 2.1
 
 orbs:
   node: circleci/node@6.1.0
-  python: circleci/python@2.1.1
 
 jobs:
-  test:
-    executor:
-      name: python/default
-      tag: "3.12"
-    steps:
-      - checkout
-      - run:
-          name: Install dependencies
-          command: |
-            pip install pytest
-      - run:
-          name: Run tests
-          command: |
-            pytest tests/ -v || echo "No tests found yet — skipping"
-
   semantic-release:
     executor:
       name: node/default
@@ -48,24 +32,11 @@ jobs:
             echo ""
 
 workflows:
-  ci:
-    jobs:
-      - test:
-          filters:
-            branches:
-              ignore: main
-
   release:
     jobs:
-      - test:
-          filters:
-            branches:
-              only: main
       - semantic-release:
           context:
             - github-developers-robot
-          requires:
-            - test
           filters:
             branches:
               only: main
