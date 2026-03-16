@@ -1,11 +1,18 @@
+# Rust
+/target
+
+# Build artifacts
+*.app/
+dist/
+*.dmg
+
+# macOS
+.DS_Store
+
+# Legacy Python
 .build_venv/
 .venv/
 __pycache__/
 *.pyc
-*.app/
-build/
-dist/
-*.dmg
 *.egg-info/
 *.spec
-setup.py
