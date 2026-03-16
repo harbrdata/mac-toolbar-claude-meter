@@ -18,6 +18,8 @@ const POLL_INTERVAL_OPTIONS: &[u64] = &[60, 120, 300, 600];
 const RATE_LIMIT_PAUSE_DEFAULT: u64 = 60;
 const RATE_LIMIT_PAUSE_MAX: u64 = 600;
 const LOG_CAPACITY: usize = 20;
+const ALERT_THRESHOLD_DEFAULT: f64 = 0.95;
+const ALERT_THRESHOLD_OPTIONS: &[u64] = &[75, 80, 85, 90, 95, 100];
 
 pub struct AppState {
     mtm: MainThreadMarker,
@@ -34,7 +36,10 @@ pub struct AppState {
     rate_limit_timer: Option<Retained<NSTimer>>,
     rate_limit_countdown_timer: Option<Retained<NSTimer>>,
     cached_token: Option<String>,
+    cached_token_expires: Option<std::time::Instant>,
     log_buffer: Vec<String>,
+    alert_threshold: f64,
+    alert_fired: bool,
 }
 
 impl AppState {
@@ -59,8 +64,22 @@ define_class!(
             self.setup();
         }
 
+        #[unsafe(method(applicationWillTerminate:))]
+        fn will_terminate(&self, _notification: &NSNotification) {
+            launch_agent::cleanup_if_uninstalled();
+        }
+
         #[unsafe(method(tick:))]
         fn tick(&self, _timer: &NSTimer) {
+            // If the .app bundle was deleted, clean up and quit
+            if !std::path::Path::new("/Applications/Claude-o-Meter.app").exists() {
+                launch_agent::cleanup_if_uninstalled();
+                let state = self.ivars().borrow();
+                let app = NSApplication::sharedApplication(state.mtm);
+                app.terminate(None);
+                return;
+            }
+
             let state = self.ivars().borrow();
             if !state.polling_enabled || state.rate_limited {
                 return;
@@ -109,6 +128,19 @@ define_class!(
         fn set_interval_300(&self, _sender: &AnyObject) { self.set_interval(300.0); }
         #[unsafe(method(setInterval600:))]
         fn set_interval_600(&self, _sender: &AnyObject) { self.set_interval(600.0); }
+
+        #[unsafe(method(setAlert75:))]
+        fn set_alert_75(&self, _sender: &AnyObject) { self.set_alert_threshold(0.75); }
+        #[unsafe(method(setAlert80:))]
+        fn set_alert_80(&self, _sender: &AnyObject) { self.set_alert_threshold(0.80); }
+        #[unsafe(method(setAlert85:))]
+        fn set_alert_85(&self, _sender: &AnyObject) { self.set_alert_threshold(0.85); }
+        #[unsafe(method(setAlert90:))]
+        fn set_alert_90(&self, _sender: &AnyObject) { self.set_alert_threshold(0.90); }
+        #[unsafe(method(setAlert95:))]
+        fn set_alert_95(&self, _sender: &AnyObject) { self.set_alert_threshold(0.95); }
+        #[unsafe(method(setAlert100:))]
+        fn set_alert_100(&self, _sender: &AnyObject) { self.set_alert_threshold(1.01); }
 
         #[unsafe(method(toggleLoginItem:))]
         fn toggle_login_item(&self, _sender: &AnyObject) {
@@ -165,7 +197,10 @@ impl AppDelegate {
             rate_limit_timer: None,
             rate_limit_countdown_timer: None,
             cached_token: None,
+            cached_token_expires: None,
             log_buffer: Vec::new(),
+            alert_threshold: ALERT_THRESHOLD_DEFAULT,
+            alert_fired: false,
         }));
         unsafe { msg_send![super(this), init] }
     }
@@ -202,7 +237,7 @@ impl AppDelegate {
                 self.retain(),
             );
             NSTimer::scheduledTimerWithTimeInterval_target_selector_userInfo_repeats(
-                0.1,
+                2.0,
                 &this,
                 sel!(tick:),
                 None,
@@ -235,6 +270,46 @@ impl AppDelegate {
         }
     }
 
+    fn set_alert_threshold(&self, threshold: f64) {
+        let mut state = self.ivars().borrow_mut();
+        state.alert_threshold = threshold;
+        state.alert_fired = false;
+        if threshold > 1.0 {
+            state.push_log(format!("{} Usage alert disabled", timestamp()));
+        } else {
+            state.push_log(format!("{} Alert threshold set to {}%", timestamp(), (threshold * 100.0) as u32));
+        }
+        drop(state);
+        self.rebuild_menu();
+    }
+
+    fn check_and_fire_alert(&self) {
+        let mut state = self.ivars().borrow_mut();
+        let threshold = state.alert_threshold;
+        if threshold > 1.0 {
+            return; // alerts disabled
+        }
+        let primary = state.last_primary.clone();
+        if let Some(primary) = primary {
+            let util = primary.utilization;
+            if util >= threshold && !state.alert_fired {
+                state.alert_fired = true;
+                let pct = (util * 100.0) as u32;
+                state.push_log(format!("{} Alert: {} usage at {}%", timestamp(), primary.label, pct));
+                drop(state);
+                let body = format!("{} window usage is at {}%", primary.label, pct);
+                let _ = std::process::Command::new("osascript")
+                    .args(["-e", &format!(
+                        "display notification \"{}\" with title \"Claude Meter\" subtitle \"Usage alert\"",
+                        body
+                    )])
+                    .spawn();
+            } else if util < threshold && state.alert_fired {
+                state.alert_fired = false;
+            }
+        }
+    }
+
     fn set_interval(&self, seconds: f64) {
         let mut state = self.ivars().borrow_mut();
         state.push_log(format!("{} Poll interval changed to {}s", timestamp(), seconds as u64));
@@ -258,9 +333,27 @@ impl AppDelegate {
         let mut state = self.ivars().borrow_mut();
         state.push_log(format!("{} Fetching usage data...", timestamp()));
 
-        if state.cached_token.is_none() {
+        // Check if cached token has expired
+        let token_expired = match state.cached_token_expires {
+            Some(expires) => std::time::Instant::now() >= expires,
+            None => state.cached_token.is_none(),
+        };
+
+        if token_expired {
+            state.cached_token = None;
+            state.cached_token_expires = None;
+
             if let Some(creds) = keychain::read_credentials() {
-                state.cached_token = api::get_access_token(&creds);
+                if let Some(result) = api::get_access_token(&creds) {
+                    state.cached_token = Some(result.access_token);
+                    if let Some(expires_in) = result.expires_in_secs {
+                        // Expire 60s early to avoid using a nearly-expired token
+                        let buffer = expires_in.saturating_sub(60);
+                        state.cached_token_expires = Some(
+                            std::time::Instant::now() + std::time::Duration::from_secs(buffer)
+                        );
+                    }
+                }
             } else {
                 state.push_log(format!("{} [ERROR] No credentials found", timestamp()));
                 drop(state);
@@ -295,6 +388,7 @@ impl AppDelegate {
                 } else {
                     self.set_icon(&gauge::create_gauge_icon(0.0, ICON_SIZE));
                 }
+                self.check_and_fire_alert();
                 self.rebuild_menu();
             }
             FetchResult::RateLimited(retry_after) => {
@@ -303,6 +397,7 @@ impl AppDelegate {
             FetchResult::AuthError => {
                 let mut state = self.ivars().borrow_mut();
                 state.cached_token = None;
+                state.cached_token_expires = None;
                 state.push_log(format!("{} [WARN] Auth error, will retry", timestamp()));
                 drop(state);
                 self.show_error();
@@ -310,6 +405,7 @@ impl AppDelegate {
             FetchResult::Error(e) => {
                 let mut state = self.ivars().borrow_mut();
                 state.cached_token = None;
+                state.cached_token_expires = None;
                 state.push_log(format!("{} [ERROR] {}", timestamp(), e));
                 drop(state);
                 self.show_error();
@@ -497,6 +593,34 @@ impl AppDelegate {
             }
             interval_item.setSubmenu(Some(&interval_menu));
             menu.addItem(&interval_item);
+
+            // Alert threshold submenu
+            let alert_item = NSMenuItem::new(mtm);
+            alert_item.setTitle(&NSString::from_str("Alert Threshold"));
+            let alert_menu = NSMenu::new(mtm);
+            let alert_selectors = [
+                sel!(setAlert75:),
+                sel!(setAlert80:),
+                sel!(setAlert85:),
+                sel!(setAlert90:),
+                sel!(setAlert95:),
+                sel!(setAlert100:),
+            ];
+            for (i, &pct) in ALERT_THRESHOLD_OPTIONS.iter().enumerate() {
+                let label = if pct >= 100 {
+                    "Off".to_string()
+                } else {
+                    format!("{}%", pct)
+                };
+                let opt = action_item(&label, alert_selectors[i], &this, mtm);
+                let threshold_val = if pct >= 100 { 1.01 } else { pct as f64 / 100.0 };
+                if (threshold_val - state.alert_threshold).abs() < 0.001 {
+                    opt.setState(1);
+                }
+                alert_menu.addItem(&opt);
+            }
+            alert_item.setSubmenu(Some(&alert_menu));
+            menu.addItem(&alert_item);
 
             // Login item toggle
             let login_label = if launch_agent::is_enabled() {

@@ -2,7 +2,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 const USAGE_URL: &str = "https://api.anthropic.com/api/oauth/usage";
 const TOKEN_URL: &str = "https://api.anthropic.com/api/oauth/token";
-const USER_AGENT: &str = "claude-code/2.1.70";
+const USER_AGENT: &str = "claude-o-meter/1.0";
 const ANTHROPIC_BETA: &str = "oauth-2025-04-20";
 
 pub enum FetchResult {
@@ -12,8 +12,15 @@ pub enum FetchResult {
     Error(String),
 }
 
+/// Token with expiry info for caching.
+pub struct TokenResult {
+    pub access_token: String,
+    /// How many seconds until this token expires (None = unknown).
+    pub expires_in_secs: Option<u64>,
+}
+
 /// Extract access token from credentials, refreshing if expired.
-pub fn get_access_token(creds: &serde_json::Value) -> Option<String> {
+pub fn get_access_token(creds: &serde_json::Value) -> Option<TokenResult> {
     let expires_at = creds.get("expiresAt").and_then(|v| v.as_u64()).unwrap_or(0);
     let now_ms = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -21,20 +28,23 @@ pub fn get_access_token(creds: &serde_json::Value) -> Option<String> {
         .as_millis() as u64;
 
     if expires_at > 0 && now_ms < expires_at {
-        return creds.get("accessToken").and_then(|v| v.as_str()).map(String::from);
+        let token = creds.get("accessToken").and_then(|v| v.as_str()).map(String::from)?;
+        let remaining_secs = (expires_at - now_ms) / 1000;
+        return Some(TokenResult { access_token: token, expires_in_secs: Some(remaining_secs) });
     }
 
     // Try refresh
     if let Some(refresh_token) = creds.get("refreshToken").and_then(|v| v.as_str()) {
-        if let Some(new_token) = refresh_access_token(refresh_token) {
-            return Some(new_token);
+        if let Some(tr) = refresh_access_token(refresh_token) {
+            return Some(tr);
         }
     }
 
-    creds.get("accessToken").and_then(|v| v.as_str()).map(String::from)
+    let token = creds.get("accessToken").and_then(|v| v.as_str()).map(String::from)?;
+    Some(TokenResult { access_token: token, expires_in_secs: None })
 }
 
-fn refresh_access_token(refresh_token: &str) -> Option<String> {
+fn refresh_access_token(refresh_token: &str) -> Option<TokenResult> {
     let body = serde_json::json!({
         "grant_type": "refresh_token",
         "refresh_token": refresh_token,
@@ -46,10 +56,12 @@ fn refresh_access_token(refresh_token: &str) -> Option<String> {
         .ok()?;
 
     let json: serde_json::Value = resp.body_mut().read_json().ok()?;
-    json.get("access_token")
+    let token = json.get("access_token")
         .or_else(|| json.get("accessToken"))
         .and_then(|v| v.as_str())
-        .map(String::from)
+        .map(String::from)?;
+    let expires_in = json.get("expires_in").and_then(|v| v.as_u64());
+    Some(TokenResult { access_token: token, expires_in_secs: expires_in })
 }
 
 /// Fetch usage data from the Anthropic API.

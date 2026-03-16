@@ -58,3 +58,14 @@ pub fn disable() {
         .output();
     let _ = fs::remove_file(&path);
 }
+
+/// If the .app bundle is gone (user dragged to Trash), clean up the launch agent.
+pub fn cleanup_if_uninstalled() {
+    if !is_enabled() {
+        return;
+    }
+    let app_path = PathBuf::from("/Applications/Claude-o-Meter.app");
+    if !app_path.exists() {
+        disable();
+    }
+}

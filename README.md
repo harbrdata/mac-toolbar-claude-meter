@@ -14,7 +14,9 @@ Requires an active Claude Code login (`claude login`).
 
 1. Download `Claude-o-Meter.dmg` from the [latest release](https://github.com/harbrdata/mac-toolbar-claude-meter/releases/latest)
 2. Open the DMG
-3. Either drag **Claude-o-Meter** to **Applications**, or double-click **Install.command** to install and launch automatically
+3. Double-click **Claude-o-Meter.pkg** to launch the installer
+
+The installer will copy the app to `/Applications`, configure it to start at login, and launch it automatically.
 
 To upgrade, repeat the same steps — the installer quits the running instance before replacing it.
 
@@ -37,13 +39,27 @@ cargo build --release
 open target/release/claude-o-meter
 ```
 
+### Running locally (development)
+
+```bash
+cargo run
+```
+
+This builds and launches the app in debug mode. The gauge icon appears in your menu bar immediately. To stop it, click the icon and select **Quit**, or press Ctrl+C in the terminal.
+
+For a faster binary closer to release performance:
+
+```bash
+cargo run --release
+```
+
 Or build a distributable DMG:
 
 ```bash
 ./build_dmg.sh
 ```
 
-This creates `dist/Claude-o-Meter.dmg` — a self-contained disk image with the `.app` bundle and an `Install.command` script.
+This creates `dist/Claude-o-Meter.dmg` — a disk image containing a `.pkg` installer.
 
 ## Features
 
@@ -51,6 +67,7 @@ This creates `dist/Claude-o-Meter.dmg` — a self-contained disk image with the 
 - Dropdown with all usage windows: 5h, 7d, Opus, Sonnet, Cowork, OAuth
 - Progress bars and reset time countdowns
 - Configurable refresh interval (1m / 2m / 5m / 10m)
+- Usage alert notification with configurable threshold (75% / 80% / 85% / 90% / 95% / Off)
 - Toggle polling on/off from the menu
 - Start at Login toggle (installs/removes a Launch Agent)
 - Automatic rate-limit handling with exponential backoff
