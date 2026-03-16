@@ -206,6 +206,7 @@ cp -R "$APP_DIR" "$PKG_ROOT/Applications/"
 
 pkgbuild \
     --root "$PKG_ROOT" \
+    --install-location "/" \
     --identifier "$BUNDLE_ID" \
     --version "$VERSION" \
     --scripts "$PKG_SCRIPTS" \
