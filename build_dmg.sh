@@ -193,6 +193,7 @@ cat > "$PKG_RESOURCES/conclusion.html" << 'CONCLUSION'
     <li>Settings for refresh interval and alert threshold</li>
 </ul>
 <p>The app is configured to start automatically at login. You can toggle this from the menu.</p>
+<p>To uninstall, just drag Claude-o-Meter from Applications to the Trash — it cleans up automatically.</p>
 </body>
 </html>
 CONCLUSION
@@ -252,43 +253,7 @@ mkdir -p "$DMG_STAGE"
 cp "$FINAL_PKG" "$DMG_STAGE/"
 
 # 7. Add README
-cat > "$DMG_STAGE/README.txt" << 'README'
-Claude-o-Meter
-==============
-
-A lightweight macOS menu bar app that shows your Claude Code plan usage at a
-glance. Displays a color-coded ring gauge in the menu bar showing your current
-usage window. Click it for a full breakdown of all windows with progress bars,
-reset countdowns, and usage alerts.
-
-Prerequisites
--------------
-You must have an active Claude Code session. If you haven't already, run:
-
-    claude login
-
-This stores OAuth credentials in your macOS Keychain that Claude-o-Meter reads
-to fetch your usage data. No credentials are stored or transmitted by this app.
-
-Installation
-------------
-Double-click "Claude-o-Meter.pkg" to launch the installer. It will:
-
-  1. Install Claude-o-Meter to /Applications
-  2. Configure it to start automatically at login
-  3. Launch the app when installation completes
-
-The gauge icon will appear in your menu bar. Click it to see usage details and
-configure settings like refresh interval and alert threshold.
-
-Uninstall
----------
-To remove Claude-o-Meter completely, run in Terminal:
-
-    launchctl bootout gui/$(id -u)/com.local.claude-o-meter
-    rm ~/Library/LaunchAgents/com.local.claude-o-meter.plist
-    rm -rf /Applications/Claude-o-Meter.app
-README
+cp "$SCRIPT_DIR/DMG_README.txt" "$DMG_STAGE/README.txt"
 
 # 8. Create the DMG
 echo "Creating DMG..."

@@ -20,13 +20,7 @@ The installer will copy the app to `/Applications`, configure it to start at log
 
 To upgrade, repeat the same steps — the installer quits the running instance before replacing it.
 
-To uninstall:
-
-```bash
-launchctl bootout gui/$(id -u)/com.local.claude-o-meter
-rm ~/Library/LaunchAgents/com.local.claude-o-meter.plist
-rm -rf /Applications/Claude-o-Meter.app
-```
+To uninstall, just drag **Claude-o-Meter** from `/Applications` to the Trash. The app automatically detects the removal, cleans up its Launch Agent, and quits.
 
 ### Option B: Build from source
 
@@ -70,6 +64,7 @@ This creates `dist/Claude-o-Meter.dmg` — a disk image containing a `.pkg` inst
 - Usage alert notification with configurable threshold (75% / 80% / 85% / 90% / 95% / Off)
 - Toggle polling on/off from the menu
 - Start at Login toggle (installs/removes a Launch Agent)
+- Clean uninstall — drag to Trash and the app removes its Launch Agent automatically
 - Automatic rate-limit handling with exponential backoff
 - Recent Logs submenu for debugging without leaving the menu bar
 - Reads credentials from your existing `claude login` session
