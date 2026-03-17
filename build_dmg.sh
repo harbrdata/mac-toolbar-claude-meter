@@ -1,7 +1,6 @@
 #!/bin/bash
 # Build a self-contained Claude-o-Meter.dmg for distribution.
-# The DMG contains the .app bundle and an Applications symlink —
-# users drag the app to Applications to install.
+# Creates a styled DMG with background image showing drag-to-install arrow.
 set -e
 export COPYFILE_DISABLE=1
 
@@ -87,20 +86,61 @@ EOF
 # 5. Stage DMG contents
 echo "Staging DMG..."
 DMG_STAGE="$DIST_DIR/dmg"
-mkdir -p "$DMG_STAGE"
+mkdir -p "$DMG_STAGE/.background"
 mv "$APP_DIR" "$DMG_STAGE/"
 
 # Applications symlink for drag-to-install
 ln -s /Applications "$DMG_STAGE/Applications"
 
-# 6. Create the DMG
-echo "Creating DMG..."
+# Copy background image
+cp "$SCRIPT_DIR/dmg_background.png" "$DMG_STAGE/.background/background.png"
+
+# 6. Create a read-write DMG, style it, then convert to compressed
+echo "Creating styled DMG..."
+DMG_RW="$DIST_DIR/$APP_NAME-rw.dmg"
 DMG_PATH="$DIST_DIR/$APP_NAME.dmg"
 
+# Create read-write DMG
 hdiutil create -volname "$APP_NAME" \
     -srcfolder "$DMG_STAGE" \
-    -ov -format UDZO \
-    "$DMG_PATH"
+    -ov -format UDRW \
+    "$DMG_RW"
+
+# Mount it
+MOUNT_DIR=$(hdiutil attach -readwrite -noverify "$DMG_RW" | grep "/Volumes/" | sed 's/.*\/Volumes/\/Volumes/')
+echo "Mounted at: $MOUNT_DIR"
+
+# Apply Finder window styling via AppleScript
+osascript << APPLESCRIPT
+tell application "Finder"
+    tell disk "$APP_NAME"
+        open
+        set current view of container window to icon view
+        set toolbar visible of container window to false
+        set statusbar visible of container window to false
+        set bounds of container window to {100, 100, 760, 570}
+        set theViewOptions to icon view options of container window
+        set arrangement of theViewOptions to not arranged
+        set icon size of theViewOptions to 96
+        set background picture of theViewOptions to file ".background:background.png"
+        set position of item "$APP_NAME.app" of container window to {165, 240}
+        set position of item "Applications" of container window to {495, 240}
+        close
+        open
+        update without registering applications
+        delay 2
+        close
+    end tell
+end tell
+APPLESCRIPT
+
+# Ensure Finder releases the volume
+sync
+hdiutil detach "$MOUNT_DIR"
+
+# Convert to compressed read-only DMG
+hdiutil convert "$DMG_RW" -format UDZO -o "$DMG_PATH"
+rm -f "$DMG_RW"
 
 echo ""
 echo "=== Done! ==="

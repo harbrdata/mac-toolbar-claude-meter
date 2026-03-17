@@ -513,6 +513,22 @@ impl AppDelegate {
             let mono_small = NSFont::fontWithName_size(&NSString::from_str("Menlo"), 11.0)
                 .unwrap_or_else(|| NSFont::systemFontOfSize(11.0));
 
+            // Logo banner
+            let logo_bytes = include_bytes!("../logo.png");
+            let data = NSData::from_vec(logo_bytes.to_vec());
+            if let Some(logo_img) = NSImage::initWithData(NSImage::alloc(), &data) {
+                let original_w = logo_img.size().width;
+                let original_h = logo_img.size().height;
+                let target_w: f64 = 280.0;
+                let target_h = target_w * original_h / original_w;
+                logo_img.setSize(NSSize::new(target_w, target_h));
+                let logo_item = NSMenuItem::new(mtm);
+                logo_item.setImage(Some(&logo_img));
+                logo_item.setEnabled(false);
+                menu.addItem(&logo_item);
+                menu.addItem(&NSMenuItem::separatorItem(mtm));
+            }
+
             // Rate-limit banner
             if state.rate_limited {
                 if let Some(ref resume_at) = state.rate_limit_resume {
