@@ -89,9 +89,6 @@ DMG_STAGE="$DIST_DIR/dmg"
 mkdir -p "$DMG_STAGE/.background"
 mv "$APP_DIR" "$DMG_STAGE/"
 
-# Applications symlink for drag-to-install
-ln -s /Applications "$DMG_STAGE/Applications"
-
 # Install script — strips quarantine (bypasses Gatekeeper for unsigned app)
 cat > "$DMG_STAGE/Install.command" << 'INSTALL_SCRIPT'
 #!/bin/bash
@@ -160,14 +157,13 @@ tell application "Finder"
         set current view of container window to icon view
         set toolbar visible of container window to false
         set statusbar visible of container window to false
-        set bounds of container window to {100, 100, 760, 570}
+        set bounds of container window to {200, 150, 680, 550}
         set theViewOptions to icon view options of container window
         set arrangement of theViewOptions to not arranged
-        set icon size of theViewOptions to 96
+        set icon size of theViewOptions to 80
         set background picture of theViewOptions to file ".background:background.png"
-        set position of item "$APP_NAME.app" of container window to {165, 240}
-        set position of item "Applications" of container window to {495, 240}
-        set position of item "Install.command" of container window to {330, 345}
+        set position of item "$APP_NAME.app" of container window to {140, 200}
+        set position of item "Install.command" of container window to {340, 200}
         close
         open
         update without registering applications
@@ -190,4 +186,4 @@ echo "=== Done! ==="
 echo "DMG created at: $DMG_PATH"
 echo "Size: $(du -h "$DMG_PATH" | cut -f1)"
 echo ""
-echo "Install by opening the DMG and dragging $APP_NAME to Applications."
+echo "Install by opening the DMG and double-clicking Install."
