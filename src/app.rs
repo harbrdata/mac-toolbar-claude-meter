@@ -513,22 +513,6 @@ impl AppDelegate {
             let mono_small = NSFont::fontWithName_size(&NSString::from_str("Menlo"), 11.0)
                 .unwrap_or_else(|| NSFont::systemFontOfSize(11.0));
 
-            // Logo banner
-            let logo_bytes = include_bytes!("../logo.png");
-            let data = NSData::from_vec(logo_bytes.to_vec());
-            if let Some(logo_img) = NSImage::initWithData(NSImage::alloc(), &data) {
-                let original_w = logo_img.size().width;
-                let original_h = logo_img.size().height;
-                let target_w: f64 = 280.0;
-                let target_h = target_w * original_h / original_w;
-                logo_img.setSize(NSSize::new(target_w, target_h));
-                let logo_item = NSMenuItem::new(mtm);
-                logo_item.setImage(Some(&logo_img));
-                logo_item.setEnabled(false);
-                menu.addItem(&logo_item);
-                menu.addItem(&NSMenuItem::separatorItem(mtm));
-            }
-
             // Rate-limit banner
             if state.rate_limited {
                 if let Some(ref resume_at) = state.rate_limit_resume {
@@ -552,15 +536,10 @@ impl AppDelegate {
             } else {
                 for w in &state.last_windows {
                     let pct = (w.utilization * 100.0) as i32;
-                    let bar = gauge::bar_chart(w.utilization, 20);
                     let reset = api::format_reset_time(w.resets_at.as_deref());
 
-                    let line = styled_item(
-                        &format!(" {}: {}%  {}", w.label, pct, bar),
-                        &mono,
-                        None,
-                        mtm,
-                    );
+                    let label_text = format!(" {}: {}%  ", w.label, pct);
+                    let line = gradient_bar_item(&label_text, w.utilization, 20, &mono, mtm);
                     line.setImage(Some(&gauge::create_gauge_icon(w.utilization, 16.0)));
                     menu.addItem(&line);
 
@@ -673,6 +652,43 @@ impl AppDelegate {
 
             menu.addItem(&NSMenuItem::separatorItem(mtm));
             menu.addItem(&action_item("Quit", sel!(quit:), &this, mtm));
+
+            // Logo banner — inserted at position 0 after all items are added
+            // so we can read the menu's computed width and size the logo to match.
+            let logo_bytes = include_bytes!("../logo.png");
+            let data = NSData::from_vec(logo_bytes.to_vec());
+            if let Some(logo_img) = NSImage::initWithData(NSImage::alloc(), &data) {
+                let original_w = logo_img.size().width;
+                let original_h = logo_img.size().height;
+
+                let menu_w = menu.size().width;
+                let target_w = menu_w - 18.0;
+                let target_h = target_w * original_h / original_w;
+                logo_img.setSize(NSSize::new(target_w, target_h));
+
+                let image_view = NSImageView::imageViewWithImage(&logo_img, mtm);
+                let padding = 9.0; // match standard NSMenuItem left padding
+                image_view.setFrame(objc2_foundation::NSRect::new(
+                    NSPoint::new(padding, 0.0),
+                    NSSize::new(target_w, target_h),
+                ));
+                let container_w = target_w + padding * 2.0;
+                let container = unsafe {
+                    let v = NSView::initWithFrame(
+                        mtm.alloc(),
+                        objc2_foundation::NSRect::new(
+                            NSPoint::new(0.0, 0.0),
+                            NSSize::new(container_w, target_h),
+                        ),
+                    );
+                    v.addSubview(&image_view);
+                    v
+                };
+                let logo_item = NSMenuItem::new(mtm);
+                logo_item.setView(Some(&container));
+                menu.insertItem_atIndex(&logo_item, 0);
+                menu.insertItem_atIndex(&NSMenuItem::separatorItem(mtm), 1);
+            }
         }
     }
 }
@@ -700,6 +716,89 @@ fn styled_item(text: &str, font: &NSFont, color: Option<&NSColor>, mtm: MainThre
         )
     };
     item.setAttributedTitle(Some(&attr_str));
+    item.setEnabled(true);
+    item
+}
+
+fn gradient_bar_item(label: &str, utilization: f64, width: usize, font: &NSFont, mtm: MainThreadMarker) -> Retained<NSMenuItem> {
+    let item = NSMenuItem::new(mtm);
+    let filled = ((utilization * width as f64) as usize).min(width);
+
+    unsafe {
+        // Label portion in default color
+        let label_keys = [NSFontAttributeName, NSForegroundColorAttributeName];
+        let label_vals: [Retained<AnyObject>; 2] = [
+            Retained::into_super(font.retain()).into(),
+            Retained::into_super(NSColor::labelColor()).into(),
+        ];
+        let label_attrs = NSDictionary::from_retained_objects(&label_keys, &label_vals);
+        let result = NSMutableAttributedString::initWithString_attributes(
+            NSMutableAttributedString::alloc(),
+            &NSString::from_str(label),
+            Some(&label_attrs),
+        );
+
+        // Each bar segment colored by its position
+        let filled_char = "\u{25b0}";
+        let empty_char = "\u{25b1}";
+        for i in 0..width {
+            let position = (i as f64 + 0.5) / width as f64;
+            let (ch, color) = if i < filled {
+                (filled_char, gauge::position_color(position))
+            } else {
+                (empty_char, gauge::position_color_muted(position))
+            };
+            let seg_keys = [NSFontAttributeName, NSForegroundColorAttributeName];
+            let seg_vals: [Retained<AnyObject>; 2] = [
+                Retained::into_super(font.retain()).into(),
+                Retained::into_super(color).into(),
+            ];
+            let seg_attrs = NSDictionary::from_retained_objects(&seg_keys, &seg_vals);
+            let seg = NSAttributedString::initWithString_attributes(
+                NSAttributedString::alloc(),
+                &NSString::from_str(ch),
+                Some(&seg_attrs),
+            );
+            result.appendAttributedString(&seg);
+        }
+
+        item.setAttributedTitle(Some(&result));
+    }
+    item.setEnabled(true);
+    item
+}
+
+fn colored_bar_item(label: &str, bar: &str, font: &NSFont, bar_color: &NSColor, mtm: MainThreadMarker) -> Retained<NSMenuItem> {
+    let item = NSMenuItem::new(mtm);
+
+    unsafe {
+        let label_keys = [NSFontAttributeName, NSForegroundColorAttributeName];
+        let label_vals: [Retained<AnyObject>; 2] = [
+            Retained::into_super(font.retain()).into(),
+            Retained::into_super(NSColor::labelColor()).into(),
+        ];
+        let label_attrs = NSDictionary::from_retained_objects(&label_keys, &label_vals);
+
+        let bar_keys = [NSFontAttributeName, NSForegroundColorAttributeName];
+        let bar_vals: [Retained<AnyObject>; 2] = [
+            Retained::into_super(font.retain()).into(),
+            Retained::into_super(bar_color.retain()).into(),
+        ];
+        let bar_attrs = NSDictionary::from_retained_objects(&bar_keys, &bar_vals);
+
+        let result = NSMutableAttributedString::initWithString_attributes(
+            NSMutableAttributedString::alloc(),
+            &NSString::from_str(label),
+            Some(&label_attrs),
+        );
+        let bar_str = NSAttributedString::initWithString_attributes(
+            NSAttributedString::alloc(),
+            &NSString::from_str(bar),
+            Some(&bar_attrs),
+        );
+        result.appendAttributedString(&bar_str);
+        item.setAttributedTitle(Some(&result));
+    }
     item.setEnabled(true);
     item
 }

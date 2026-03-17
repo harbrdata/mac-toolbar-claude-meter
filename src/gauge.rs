@@ -136,3 +136,26 @@ pub fn bar_chart(utilization: f64, width: usize) -> String {
     let empty = width - filled;
     "\u{25b0}".repeat(filled) + &"\u{25b1}".repeat(empty)
 }
+
+/// Color for a position in the bar (0.0 = start, 1.0 = end).
+/// Green for 0–60%, orange for 60–80%, red for 80–100%.
+pub fn position_color(position: f64) -> Retained<NSColor> {
+    if position >= THRESHOLD_DANGER {
+        NSColor::systemRedColor()
+    } else if position >= THRESHOLD_WARNING {
+        NSColor::systemOrangeColor()
+    } else {
+        NSColor::systemGreenColor()
+    }
+}
+
+/// Muted version of position color for unfilled segments.
+pub fn position_color_muted(position: f64) -> Retained<NSColor> {
+    if position >= THRESHOLD_DANGER {
+        NSColor::colorWithCalibratedRed_green_blue_alpha(0.8, 0.3, 0.3, 0.25)
+    } else if position >= THRESHOLD_WARNING {
+        NSColor::colorWithCalibratedRed_green_blue_alpha(0.8, 0.6, 0.2, 0.25)
+    } else {
+        NSColor::colorWithCalibratedRed_green_blue_alpha(0.3, 0.7, 0.3, 0.25)
+    }
+}
