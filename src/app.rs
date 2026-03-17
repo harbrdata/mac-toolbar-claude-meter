@@ -117,6 +117,9 @@ define_class!(
                 drop(state);
                 self.set_icon(&gauge::create_paused_icon(ICON_SIZE));
             }
+            let state = self.ivars().borrow();
+            save_preferences(state.poll_interval, state.alert_threshold, state.polling_enabled);
+            drop(state);
             self.rebuild_menu();
         }
 
@@ -181,14 +184,17 @@ define_class!(
 
 impl AppDelegate {
     fn new(mtm: MainThreadMarker) -> Retained<Self> {
+        // Load saved preferences
+        let (saved_interval, saved_threshold, saved_polling) = load_preferences();
+
         let this = mtm.alloc::<AppDelegate>();
         let this = this.set_ivars(RefCell::new(AppState {
             mtm,
             status_item: None,
             menu: None,
-            poll_interval: POLL_INTERVAL_DEFAULT,
+            poll_interval: saved_interval,
             poll_timer: None,
-            polling_enabled: true,
+            polling_enabled: saved_polling,
             last_windows: Vec::new(),
             last_primary: None,
             rate_limited: false,
@@ -199,7 +205,7 @@ impl AppDelegate {
             cached_token: None,
             cached_token_expires: None,
             log_buffer: Vec::new(),
-            alert_threshold: ALERT_THRESHOLD_DEFAULT,
+            alert_threshold: saved_threshold,
             alert_fired: false,
         }));
         unsafe { msg_send![super(this), init] }
@@ -244,7 +250,16 @@ impl AppDelegate {
                 false,
             );
 
-            self.start_timer(POLL_INTERVAL_DEFAULT);
+            let state = self.ivars().borrow();
+            let saved_interval = state.poll_interval;
+            let polling = state.polling_enabled;
+            drop(state);
+
+            if polling {
+                self.start_timer(saved_interval);
+            } else {
+                self.set_icon(&gauge::create_paused_icon(ICON_SIZE));
+            }
         }
     }
 
@@ -274,12 +289,14 @@ impl AppDelegate {
         let mut state = self.ivars().borrow_mut();
         state.alert_threshold = threshold;
         state.alert_fired = false;
+        let interval = state.poll_interval;
         if threshold > 1.0 {
             state.push_log(format!("{} Usage alert disabled", timestamp()));
         } else {
             state.push_log(format!("{} Alert threshold set to {}%", timestamp(), (threshold * 100.0) as u32));
         }
         drop(state);
+        save_preferences(interval, threshold, self.ivars().borrow().polling_enabled);
         self.rebuild_menu();
     }
 
@@ -315,6 +332,8 @@ impl AppDelegate {
         state.push_log(format!("{} Poll interval changed to {}s", timestamp(), seconds as u64));
         drop(state);
         self.start_timer(seconds);
+        let state = self.ivars().borrow();
+        save_preferences(seconds, state.alert_threshold, state.polling_enabled);
         self.rebuild_menu();
     }
 
@@ -811,6 +830,29 @@ fn action_item(title: &str, action: Sel, target: &NSObject, mtm: MainThreadMarke
         item.setTarget(Some(target));
     }
     item
+}
+
+fn save_preferences(poll_interval: f64, alert_threshold: f64, polling_enabled: bool) {
+    let defaults = unsafe { NSUserDefaults::standardUserDefaults() };
+    defaults.setDouble_forKey(poll_interval, &NSString::from_str("poll_interval"));
+    defaults.setDouble_forKey(alert_threshold, &NSString::from_str("alert_threshold"));
+    defaults.setBool_forKey(polling_enabled, &NSString::from_str("polling_enabled"));
+}
+
+fn load_preferences() -> (f64, f64, bool) {
+    let defaults = unsafe { NSUserDefaults::standardUserDefaults() };
+    let interval = defaults.doubleForKey(&NSString::from_str("poll_interval"));
+    let threshold = defaults.doubleForKey(&NSString::from_str("alert_threshold"));
+
+    // doubleForKey returns 0.0 if not set — use defaults in that case
+    let interval = if interval > 0.0 { interval } else { POLL_INTERVAL_DEFAULT };
+    let threshold = if threshold > 0.0 { threshold } else { ALERT_THRESHOLD_DEFAULT };
+
+    // boolForKey returns false if not set — default to true (polling on)
+    let has_key = defaults.objectForKey(&NSString::from_str("polling_enabled")).is_some();
+    let polling = if has_key { defaults.boolForKey(&NSString::from_str("polling_enabled")) } else { true };
+
+    (interval, threshold, polling)
 }
 
 fn timestamp() -> String {
