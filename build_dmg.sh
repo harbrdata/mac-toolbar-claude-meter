@@ -92,6 +92,48 @@ mv "$APP_DIR" "$DMG_STAGE/"
 # Applications symlink for drag-to-install
 ln -s /Applications "$DMG_STAGE/Applications"
 
+# Install script — strips quarantine (bypasses Gatekeeper for unsigned app)
+cat > "$DMG_STAGE/Install.command" << 'INSTALL_SCRIPT'
+#!/bin/bash
+set -e
+APP_NAME="Claude-o-Meter"
+DMG_APP="$(cd "$(dirname "$0")" && pwd)/$APP_NAME.app"
+
+echo "=== Installing $APP_NAME ==="
+echo ""
+
+# Quit any running instance
+if pgrep -xq "$APP_NAME"; then
+    echo "Quitting running instance..."
+    osascript -e "quit app \"$APP_NAME\"" 2>/dev/null || true
+    sleep 2
+    pkill -x "$APP_NAME" 2>/dev/null || true
+    sleep 1
+fi
+
+# Copy to /Applications
+echo "Copying to /Applications..."
+rm -rf "/Applications/$APP_NAME.app"
+cp -R "$DMG_APP" "/Applications/"
+
+# Strip quarantine so macOS doesn't block the unsigned app
+xattr -d com.apple.quarantine "/Applications/$APP_NAME.app" 2>/dev/null || true
+
+# Launch
+echo "Launching $APP_NAME..."
+open "/Applications/$APP_NAME.app"
+
+echo ""
+echo "Done! $APP_NAME is running in your menu bar."
+echo "You can close this window and eject the disk image."
+INSTALL_SCRIPT
+chmod +x "$DMG_STAGE/Install.command"
+
+# Apply custom icon to Install.command
+if command -v fileicon &>/dev/null && [ -f "$SCRIPT_DIR/InstallIcon.icns" ]; then
+    fileicon set "$DMG_STAGE/Install.command" "$SCRIPT_DIR/InstallIcon.icns"
+fi
+
 # Copy background image
 cp "$SCRIPT_DIR/dmg_background.png" "$DMG_STAGE/.background/background.png"
 
@@ -125,6 +167,7 @@ tell application "Finder"
         set background picture of theViewOptions to file ".background:background.png"
         set position of item "$APP_NAME.app" of container window to {165, 240}
         set position of item "Applications" of container window to {495, 240}
+        set position of item "Install.command" of container window to {330, 345}
         close
         open
         update without registering applications

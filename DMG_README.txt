@@ -17,7 +17,7 @@ to fetch your usage data. No credentials are stored or transmitted by this app.
 
 Installation
 ------------
-Drag Claude-o-Meter to the Applications folder, then open it from Applications.
+Double-click "Install" to copy the app to /Applications and launch it.
 
 The gauge icon will appear in your menu bar. Click it to see usage details and
 configure settings like refresh interval and alert threshold.

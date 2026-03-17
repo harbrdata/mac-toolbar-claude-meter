@@ -14,10 +14,11 @@ Requires an active Claude Code login (`claude login`).
 
 1. Download `Claude-o-Meter.dmg` from the [latest release](https://github.com/harbrdata/mac-toolbar-claude-meter/releases/latest)
 2. Open the DMG
-3. Drag **Claude-o-Meter** to **Applications**
-4. Open the app from Applications
+3. Double-click **Install**
 
-To upgrade, repeat the same steps — replace the existing app when prompted.
+The installer copies the app to `/Applications`, strips the macOS quarantine flag, and launches it.
+
+To upgrade, repeat the same steps — the installer replaces the existing app.
 
 To uninstall, just drag **Claude-o-Meter** from `/Applications` to the Trash. The app automatically detects the removal, cleans up its Launch Agent, and quits.
 
