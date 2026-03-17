@@ -14,9 +14,7 @@ Requires an active Claude Code login (`claude login`).
 
 1. Download `Claude-o-Meter.dmg` from the [latest release](https://github.com/harbrdata/mac-toolbar-claude-meter/releases/latest)
 2. Open the DMG
-3. Double-click **Claude-o-Meter.pkg** to launch the installer
-
-The installer will copy the app to `/Applications`, configure it to start at login, and launch it automatically.
+3. Either drag **Claude-o-Meter** to **Applications**, or double-click **Install.command** to install and launch automatically
 
 To upgrade, repeat the same steps — the installer quits the running instance before replacing it.
 

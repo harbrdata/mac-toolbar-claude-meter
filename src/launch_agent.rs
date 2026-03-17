@@ -30,9 +30,7 @@ pub fn enable() {
     <string>{LABEL}</string>
     <key>ProgramArguments</key>
     <array>
-        <string>open</string>
-        <string>-a</string>
-        <string>Claude-o-Meter</string>
+        <string>/Applications/Claude-o-Meter.app/Contents/MacOS/Claude-o-Meter</string>
     </array>
     <key>RunAtLoad</key>
     <true/>

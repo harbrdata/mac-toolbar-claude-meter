@@ -1,10 +1,9 @@
 #!/bin/bash
-# Build a self-contained Claude-o-Meter.dmg containing a .pkg installer.
-# The .pkg provides a native macOS installer UI that:
-#   - Installs the app to /Applications
-#   - Configures it to start at login (Launch Agent)
-#   - Launches the app after installation
+# Build a self-contained Claude-o-Meter.dmg for distribution.
+# The DMG contains the .app bundle, an Install.command script, and an
+# Applications symlink for drag-to-install.
 set -e
+export COPYFILE_DISABLE=1
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 APP_NAME="Claude-o-Meter"
@@ -85,47 +84,43 @@ cat > "$CONTENTS/Info.plist" << EOF
 </plist>
 EOF
 
-# 5. Build the .pkg installer
-echo "Building .pkg installer..."
-PKG_DIR="$DIST_DIR/pkg"
-PKG_SCRIPTS="$PKG_DIR/scripts"
-PKG_RESOURCES="$PKG_DIR/resources"
-COMPONENT_PKG="$PKG_DIR/component.pkg"
-FINAL_PKG="$DIST_DIR/$APP_NAME.pkg"
+# 5. Stage DMG contents
+echo "Staging DMG..."
+DMG_STAGE="$DIST_DIR/dmg"
+mkdir -p "$DMG_STAGE"
+mv "$APP_DIR" "$DMG_STAGE/"
+APP_DIR="$DMG_STAGE/$APP_NAME.app"
 
-mkdir -p "$PKG_SCRIPTS" "$PKG_RESOURCES"
-
-# 5a. Preinstall script — quit any running instance
-cat > "$PKG_SCRIPTS/preinstall" << 'PREINSTALL'
+# 6. Create install/upgrade helper script
+cat > "$DMG_STAGE/Install.command" << 'INSTALL_SCRIPT'
 #!/bin/bash
+# Install or upgrade Claude-o-Meter.
+set -e
+
 APP_NAME="Claude-o-Meter"
+LABEL="com.local.claude-o-meter"
+DMG_APP="$(cd "$(dirname "$0")" && pwd)/$APP_NAME.app"
+
+echo "=== Installing $APP_NAME ==="
+echo ""
+
+# Quit any running instance
 if pgrep -xq "$APP_NAME"; then
+    echo "Quitting running instance..."
     osascript -e "quit app \"$APP_NAME\"" 2>/dev/null || true
     sleep 2
     pkill -x "$APP_NAME" 2>/dev/null || true
     sleep 1
 fi
-exit 0
-PREINSTALL
-chmod +x "$PKG_SCRIPTS/preinstall"
 
-# 5b. Postinstall script — install Launch Agent and launch the app
-cat > "$PKG_SCRIPTS/postinstall" << 'POSTINSTALL'
-#!/bin/bash
-APP_NAME="Claude-o-Meter"
-LABEL="com.local.claude-o-meter"
-CURRENT_USER="$USER"
-if [ "$CURRENT_USER" = "root" ]; then
-    CURRENT_USER="$SUDO_USER"
-fi
-HOME_DIR=$(eval echo "~$CURRENT_USER")
-LAUNCH_AGENTS_DIR="$HOME_DIR/Library/LaunchAgents"
-PLIST_PATH="$LAUNCH_AGENTS_DIR/$LABEL.plist"
+# Copy to /Applications
+echo "Copying to /Applications..."
+rm -rf "/Applications/$APP_NAME.app"
+cp -R "$DMG_APP" "/Applications/"
 
-# Create LaunchAgents directory if needed
-mkdir -p "$LAUNCH_AGENTS_DIR"
-
-# Write the Launch Agent plist
+# Install Launch Agent for start-at-login
+PLIST_PATH="$HOME/Library/LaunchAgents/$LABEL.plist"
+mkdir -p "$HOME/Library/LaunchAgents"
 cat > "$PLIST_PATH" << PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -135,9 +130,7 @@ cat > "$PLIST_PATH" << PLIST
     <string>$LABEL</string>
     <key>ProgramArguments</key>
     <array>
-        <string>open</string>
-        <string>-a</string>
-        <string>$APP_NAME</string>
+        <string>/Applications/$APP_NAME.app/Contents/MacOS/$APP_NAME</string>
     </array>
     <key>RunAtLoad</key>
     <true/>
@@ -147,116 +140,26 @@ cat > "$PLIST_PATH" << PLIST
 </plist>
 PLIST
 
-# Fix ownership (installer runs as root)
-chown "$CURRENT_USER" "$PLIST_PATH"
+# Load the Launch Agent
+launchctl bootstrap "gui/$(id -u)" "$PLIST_PATH" 2>/dev/null || true
 
-# Bootstrap the Launch Agent
-UID_NUM=$(id -u "$CURRENT_USER")
-launchctl bootstrap "gui/$UID_NUM" "$PLIST_PATH" 2>/dev/null || true
+# Launch the new version
+echo "Launching $APP_NAME..."
+open "/Applications/$APP_NAME.app"
 
-# Launch the app as the current user
-sudo -u "$CURRENT_USER" open -a "$APP_NAME"
+echo ""
+echo "Done! $APP_NAME is installed and running."
+echo "You can now close this window and eject the disk image."
+INSTALL_SCRIPT
+chmod +x "$DMG_STAGE/Install.command"
 
-exit 0
-POSTINSTALL
-chmod +x "$PKG_SCRIPTS/postinstall"
+# 7. Add Applications symlink for drag-to-install
+ln -s /Applications "$DMG_STAGE/Applications"
 
-# 5c. Welcome page for the installer
-cat > "$PKG_RESOURCES/welcome.html" << 'WELCOME'
-<html>
-<body style="font-family: -apple-system, Helvetica Neue, sans-serif; font-size: 13px; line-height: 1.5; padding: 10px;">
-<h2>Claude-o-Meter</h2>
-<p>A lightweight macOS menu bar app that shows your Claude Code plan usage at a glance.</p>
-<p>This installer will:</p>
-<ul>
-    <li>Install Claude-o-Meter to <b>/Applications</b></li>
-    <li>Configure it to <b>start automatically at login</b></li>
-    <li>Launch the app when installation completes</li>
-</ul>
-<p><b>Prerequisite:</b> You must have an active Claude Code session.
-If you haven't already, open Terminal and run:</p>
-<pre style="background: #f0f0f0; padding: 8px 12px; border-radius: 4px; font-size: 12px;">claude login</pre>
-</body>
-</html>
-WELCOME
-
-# 5d. Conclusion page
-cat > "$PKG_RESOURCES/conclusion.html" << 'CONCLUSION'
-<html>
-<body style="font-family: -apple-system, Helvetica Neue, sans-serif; font-size: 13px; line-height: 1.5; padding: 10px;">
-<h2>Installation Complete</h2>
-<p>Claude-o-Meter is now running in your menu bar. Look for the gauge icon at the top of your screen.</p>
-<p>Click the icon to see:</p>
-<ul>
-    <li>Usage breakdown across all windows</li>
-    <li>Reset countdowns</li>
-    <li>Settings for refresh interval and alert threshold</li>
-</ul>
-<p>The app is configured to start automatically at login. You can toggle this from the menu.</p>
-<p>To uninstall, just drag Claude-o-Meter from Applications to the Trash — it cleans up automatically.</p>
-</body>
-</html>
-CONCLUSION
-
-# 5e. Build component package from the .app bundle
-# Stage the app in a payload root matching the install location
-PKG_ROOT="$PKG_DIR/root"
-mkdir -p "$PKG_ROOT/Applications"
-cp -R "$APP_DIR" "$PKG_ROOT/Applications/"
-
-pkgbuild \
-    --root "$PKG_ROOT" \
-    --install-location "/" \
-    --identifier "$BUNDLE_ID" \
-    --version "$VERSION" \
-    --scripts "$PKG_SCRIPTS" \
-    "$COMPONENT_PKG"
-
-# 5f. Create distribution XML for productbuild
-DIST_XML="$PKG_DIR/distribution.xml"
-cat > "$DIST_XML" << DIST
-<?xml version="1.0" encoding="UTF-8"?>
-<installer-gui-script minSpecVersion="2">
-    <title>Claude-o-Meter</title>
-    <welcome file="welcome.html" mime-type="text/html"/>
-    <conclusion file="conclusion.html" mime-type="text/html"/>
-    <options customize="never" require-scripts="false"/>
-    <domains enable_localSystem="true"/>
-    <pkg-ref id="$BUNDLE_ID"/>
-    <choices-outline>
-        <line choice="default">
-            <line choice="$BUNDLE_ID"/>
-        </line>
-    </choices-outline>
-    <choice id="default"/>
-    <choice id="$BUNDLE_ID" visible="false">
-        <pkg-ref id="$BUNDLE_ID"/>
-    </choice>
-    <pkg-ref id="$BUNDLE_ID" version="$VERSION" onConclusion="none">component.pkg</pkg-ref>
-</installer-gui-script>
-DIST
-
-# 5g. Build the final .pkg with the distribution and resources
-productbuild \
-    --distribution "$DIST_XML" \
-    --resources "$PKG_RESOURCES" \
-    --package-path "$PKG_DIR" \
-    "$FINAL_PKG"
-
-echo "PKG created: $FINAL_PKG"
-
-# 6. Stage DMG contents
-echo "Staging DMG..."
-DMG_STAGE="$DIST_DIR/dmg"
-mkdir -p "$DMG_STAGE"
-
-# Copy the .pkg into the DMG
-cp "$FINAL_PKG" "$DMG_STAGE/"
-
-# 7. Add README
+# 8. Add README
 cp "$SCRIPT_DIR/DMG_README.txt" "$DMG_STAGE/README.txt"
 
-# 8. Create the DMG
+# 9. Create the DMG
 echo "Creating DMG..."
 DMG_PATH="$DIST_DIR/$APP_NAME.dmg"
 
@@ -265,12 +168,11 @@ hdiutil create -volname "$APP_NAME" \
     -ov -format UDZO \
     "$DMG_PATH"
 
-# Clean up intermediate files
-rm -rf "$PKG_DIR" "$APP_DIR" "$FINAL_PKG"
-
 echo ""
 echo "=== Done! ==="
 echo "DMG created at: $DMG_PATH"
 echo "Size: $(du -h "$DMG_PATH" | cut -f1)"
 echo ""
-echo "Users install by opening the DMG and double-clicking $APP_NAME.pkg"
+echo "Users can install by opening the DMG and either:"
+echo "  - Dragging $APP_NAME to Applications"
+echo "  - Double-clicking Install.command"
