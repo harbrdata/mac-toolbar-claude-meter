@@ -17,10 +17,7 @@ to fetch your usage data. No credentials are stored or transmitted by this app.
 
 Installation
 ------------
-Either:
-  - Drag Claude-o-Meter to the Applications folder, then double-click to launch
-  - Double-click "Install.command" to install, configure start-at-login, and
-    launch automatically
+Drag Claude-o-Meter to the Applications folder, then open it from Applications.
 
 The gauge icon will appear in your menu bar. Click it to see usage details and
 configure settings like refresh interval and alert threshold.
