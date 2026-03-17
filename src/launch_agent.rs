@@ -41,11 +41,7 @@ pub fn enable() {
     );
 
     let _ = fs::write(&path, plist);
-    let uid = unsafe { libc::getuid() };
-    let _ = Command::new("launchctl")
-        .args(["bootstrap", &format!("gui/{uid}"), path.to_str().unwrap()])
-        .output();
-
+    // Don't bootstrap — the app is already running. The plist takes effect on next login.
 }
 
 pub fn disable() {
