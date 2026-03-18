@@ -114,7 +114,9 @@ rm -rf "/Applications/$APP_NAME.app"
 cp -R "$DMG_APP" "/Applications/"
 
 # Strip quarantine so macOS doesn't block the unsigned app
-xattr -d com.apple.quarantine "/Applications/$APP_NAME.app" 2>/dev/null || true
+# Strip all quarantine/provenance attributes that block unsigned apps
+xattr -c "/Applications/$APP_NAME.app" 2>/dev/null || true
+find "/Applications/$APP_NAME.app" -exec xattr -c {} \; 2>/dev/null || true
 
 # Launch
 echo "Launching $APP_NAME..."
