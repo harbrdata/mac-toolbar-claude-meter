@@ -692,7 +692,7 @@ impl AppDelegate {
                     NSSize::new(target_w, target_h),
                 ));
                 let container_w = target_w + padding * 2.0;
-                let container = unsafe {
+                let container = {
                     let v = NSView::initWithFrame(
                         mtm.alloc(),
                         objc2_foundation::NSRect::new(
@@ -787,41 +787,6 @@ fn gradient_bar_item(label: &str, utilization: f64, width: usize, font: &NSFont,
     item
 }
 
-fn colored_bar_item(label: &str, bar: &str, font: &NSFont, bar_color: &NSColor, mtm: MainThreadMarker) -> Retained<NSMenuItem> {
-    let item = NSMenuItem::new(mtm);
-
-    unsafe {
-        let label_keys = [NSFontAttributeName, NSForegroundColorAttributeName];
-        let label_vals: [Retained<AnyObject>; 2] = [
-            Retained::into_super(font.retain()).into(),
-            Retained::into_super(NSColor::labelColor()).into(),
-        ];
-        let label_attrs = NSDictionary::from_retained_objects(&label_keys, &label_vals);
-
-        let bar_keys = [NSFontAttributeName, NSForegroundColorAttributeName];
-        let bar_vals: [Retained<AnyObject>; 2] = [
-            Retained::into_super(font.retain()).into(),
-            Retained::into_super(bar_color.retain()).into(),
-        ];
-        let bar_attrs = NSDictionary::from_retained_objects(&bar_keys, &bar_vals);
-
-        let result = NSMutableAttributedString::initWithString_attributes(
-            NSMutableAttributedString::alloc(),
-            &NSString::from_str(label),
-            Some(&label_attrs),
-        );
-        let bar_str = NSAttributedString::initWithString_attributes(
-            NSAttributedString::alloc(),
-            &NSString::from_str(bar),
-            Some(&bar_attrs),
-        );
-        result.appendAttributedString(&bar_str);
-        item.setAttributedTitle(Some(&result));
-    }
-    item.setEnabled(true);
-    item
-}
-
 fn action_item(title: &str, action: Sel, target: &NSObject, mtm: MainThreadMarker) -> Retained<NSMenuItem> {
     let item = NSMenuItem::new(mtm);
     item.setTitle(&NSString::from_str(title));
@@ -833,14 +798,14 @@ fn action_item(title: &str, action: Sel, target: &NSObject, mtm: MainThreadMarke
 }
 
 fn save_preferences(poll_interval: f64, alert_threshold: f64, polling_enabled: bool) {
-    let defaults = unsafe { NSUserDefaults::standardUserDefaults() };
+    let defaults = NSUserDefaults::standardUserDefaults();
     defaults.setDouble_forKey(poll_interval, &NSString::from_str("poll_interval"));
     defaults.setDouble_forKey(alert_threshold, &NSString::from_str("alert_threshold"));
     defaults.setBool_forKey(polling_enabled, &NSString::from_str("polling_enabled"));
 }
 
 fn load_preferences() -> (f64, f64, bool) {
-    let defaults = unsafe { NSUserDefaults::standardUserDefaults() };
+    let defaults = NSUserDefaults::standardUserDefaults();
     let interval = defaults.doubleForKey(&NSString::from_str("poll_interval"));
     let threshold = defaults.doubleForKey(&NSString::from_str("alert_threshold"));
 

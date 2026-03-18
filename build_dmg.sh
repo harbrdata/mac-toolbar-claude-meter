@@ -19,16 +19,28 @@ fi
 echo "=== Building $APP_NAME.dmg (v$VERSION) ==="
 echo ""
 
-# 1. Build release binary
-echo "Building Rust binary..."
-cargo build --release --manifest-path "$SCRIPT_DIR/Cargo.toml"
+# 1. Build universal release binary (arm64 + x86_64)
+echo "Building Rust binaries..."
+CARGO="cargo"
+# Use rustup cargo if available (needed for cross-compilation targets)
+if [ -x "/opt/homebrew/opt/rustup/bin/cargo" ]; then
+    CARGO="/opt/homebrew/opt/rustup/bin/cargo"
+fi
 
-BINARY="$SCRIPT_DIR/target/release/claude-o-meter"
-if [ ! -f "$BINARY" ]; then
-    echo "ERROR: Binary not found at $BINARY"
+$CARGO build --release --manifest-path "$SCRIPT_DIR/Cargo.toml" --target aarch64-apple-darwin
+$CARGO build --release --manifest-path "$SCRIPT_DIR/Cargo.toml" --target x86_64-apple-darwin
+
+ARM_BIN="$SCRIPT_DIR/target/aarch64-apple-darwin/release/claude-o-meter"
+X86_BIN="$SCRIPT_DIR/target/x86_64-apple-darwin/release/claude-o-meter"
+BINARY="$SCRIPT_DIR/target/release/claude-o-meter-universal"
+
+if [ ! -f "$ARM_BIN" ] || [ ! -f "$X86_BIN" ]; then
+    echo "ERROR: One or both binaries not found"
     exit 1
 fi
-echo "Binary size: $(du -h "$BINARY" | cut -f1)"
+
+lipo -create "$ARM_BIN" "$X86_BIN" -output "$BINARY"
+echo "Universal binary size: $(du -h "$BINARY" | cut -f1)"
 
 # 2. Create .app bundle
 echo "Creating app bundle..."

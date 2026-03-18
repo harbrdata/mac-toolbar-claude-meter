@@ -53,7 +53,7 @@ Or build a distributable DMG:
 ./build_dmg.sh
 ```
 
-This creates `dist/Claude-o-Meter.dmg` — a disk image containing a `.pkg` installer.
+This creates `dist/Claude-o-Meter.dmg` — a universal binary (Intel + Apple Silicon) disk image.
 
 ## Features
 
@@ -69,7 +69,7 @@ This creates `dist/Claude-o-Meter.dmg` — a disk image containing a `.pkg` inst
 - Recent Logs submenu for debugging without leaving the menu bar
 - Reads credentials from your existing `claude login` session
 - No dock icon — runs purely in the menu bar
-- Native Rust binary — ~1.5MB, instant startup, no runtime dependencies
+- Native Rust universal binary (Intel + Apple Silicon) — instant startup, no runtime dependencies
 
 ## How authentication works
 

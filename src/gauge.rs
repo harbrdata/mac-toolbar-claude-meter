@@ -131,11 +131,6 @@ pub fn create_error_icon(size: f64) -> Retained<NSImage> {
     })
 }
 
-pub fn bar_chart(utilization: f64, width: usize) -> String {
-    let filled = ((utilization * width as f64) as usize).min(width);
-    let empty = width - filled;
-    "\u{25b0}".repeat(filled) + &"\u{25b1}".repeat(empty)
-}
 
 /// Color for a position in the bar (0.0 = start, 1.0 = end).
 /// Green for 0–60%, orange for 60–80%, red for 80–100%.
