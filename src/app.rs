@@ -1,4 +1,6 @@
 use std::cell::RefCell;
+use std::fs::OpenOptions;
+use std::io::Write;
 use std::time::Instant;
 
 use objc2::rc::Retained;
@@ -38,6 +40,7 @@ pub struct AppState {
     cached_token: Option<String>,
     cached_token_expires: Option<std::time::Instant>,
     log_buffer: Vec<String>,
+    log_write_count: u32,
     alert_threshold: f64,
     alert_fired: bool,
 }
@@ -46,6 +49,17 @@ impl AppState {
     fn push_log(&mut self, msg: String) {
         if self.log_buffer.len() >= LOG_CAPACITY {
             self.log_buffer.remove(0);
+        }
+        // Append to log file
+        let log_path = launch_agent::log_file_path();
+        if let Ok(mut f) = OpenOptions::new().create(true).append(true).open(&log_path) {
+            let _ = writeln!(f, "{}", msg);
+        }
+        // Check for rotation every 100 writes
+        self.log_write_count += 1;
+        if self.log_write_count >= 100 {
+            self.log_write_count = 0;
+            launch_agent::rotate_log_if_needed();
         }
         self.log_buffer.push(msg);
     }
@@ -205,6 +219,7 @@ impl AppDelegate {
             cached_token: None,
             cached_token_expires: None,
             log_buffer: Vec::new(),
+            log_write_count: 0,
             alert_threshold: saved_threshold,
             alert_fired: false,
         }));
@@ -216,6 +231,9 @@ impl AppDelegate {
     }
 
     fn setup(&self) {
+        let _ = std::fs::create_dir_all(launch_agent::log_dir());
+        launch_agent::rotate_log_if_needed();
+
         let mtm = self.mtm();
         unsafe {
             let status_bar = NSStatusBar::systemStatusBar();
