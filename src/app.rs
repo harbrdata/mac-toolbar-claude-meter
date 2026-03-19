@@ -509,6 +509,7 @@ impl AppDelegate {
     fn clear_rate_limit(&self) {
         let mut state = self.ivars().borrow_mut();
         state.rate_limited = false;
+        state.rate_limit_backoff = 0;
         state.rate_limit_resume = None;
         if let Some(ref t) = state.rate_limit_timer {
             t.invalidate();
