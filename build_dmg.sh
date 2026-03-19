@@ -22,9 +22,14 @@ echo ""
 # 1. Build universal release binary (arm64 + x86_64)
 echo "Building Rust binaries..."
 CARGO="cargo"
-# Use rustup cargo if available (needed for cross-compilation targets)
+# Use rustup toolchain if available (needed for cross-compilation targets)
 if [ -x "/opt/homebrew/opt/rustup/bin/cargo" ]; then
     CARGO="/opt/homebrew/opt/rustup/bin/cargo"
+    # Ensure cargo uses rustup's rustc (not Homebrew's) so it can find cross-compilation targets
+    RUSTUP_RUSTC="$(rustup which rustc 2>/dev/null)"
+    if [ -n "$RUSTUP_RUSTC" ]; then
+        export RUSTC="$RUSTUP_RUSTC"
+    fi
 fi
 
 $CARGO build --release --manifest-path "$SCRIPT_DIR/Cargo.toml" --target aarch64-apple-darwin
