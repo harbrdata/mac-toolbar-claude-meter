@@ -1,11 +1,14 @@
 use std::cell::RefCell;
+use std::ffi::c_void;
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::time::Instant;
 
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, Sel};
-use objc2::{define_class, msg_send, sel, AnyThread, MainThreadMarker, MainThreadOnly, DefinedClass, Message};
+use objc2::{
+    AnyThread, DefinedClass, MainThreadMarker, MainThreadOnly, Message, define_class, msg_send, sel,
+};
 use objc2_app_kit::*;
 use objc2_foundation::*;
 
@@ -13,6 +16,31 @@ use crate::api::{self, FetchResult, UsageWindow};
 use crate::gauge;
 use crate::keychain;
 use crate::launch_agent;
+
+// GCD FFI for dispatching closures back to the main thread.
+unsafe extern "C" {
+    static _dispatch_main_q: c_void;
+    fn dispatch_async_f(
+        queue: *const c_void,
+        context: *mut c_void,
+        work: extern "C" fn(*mut c_void),
+    );
+}
+
+/// Run a closure on the main thread via GCD dispatch_async.
+fn dispatch_main<F: FnOnce() + Send + 'static>(f: F) {
+    let boxed: Box<Box<dyn FnOnce() + Send>> = Box::new(Box::new(f));
+    let raw = Box::into_raw(boxed) as *mut c_void;
+
+    extern "C" fn trampoline(context: *mut c_void) {
+        let boxed: Box<Box<dyn FnOnce() + Send>> = unsafe { Box::from_raw(context as *mut _) };
+        boxed();
+    }
+
+    unsafe {
+        dispatch_async_f(&_dispatch_main_q as *const c_void, raw, trampoline);
+    }
+}
 
 const ICON_SIZE: f64 = 24.0;
 const POLL_INTERVAL_DEFAULT: f64 = 120.0;
@@ -43,6 +71,7 @@ pub struct AppState {
     log_write_count: u32,
     alert_threshold: f64,
     alert_fired: bool,
+    fetch_in_progress: bool,
 }
 
 impl AppState {
@@ -222,6 +251,7 @@ impl AppDelegate {
             log_write_count: 0,
             alert_threshold: saved_threshold,
             alert_fired: false,
+            fetch_in_progress: false,
         }));
         unsafe { msg_send![super(this), init] }
     }
@@ -257,9 +287,7 @@ impl AppDelegate {
 
             self.rebuild_menu();
 
-            let this: Retained<NSObject> = Retained::into_super(
-                self.retain(),
-            );
+            let this: Retained<NSObject> = Retained::into_super(self.retain());
             NSTimer::scheduledTimerWithTimeInterval_target_selector_userInfo_repeats(
                 2.0,
                 &this,
@@ -288,9 +316,7 @@ impl AppDelegate {
         }
         state.poll_interval = interval;
         unsafe {
-            let this: Retained<NSObject> = Retained::into_super(
-                self.retain(),
-            );
+            let this: Retained<NSObject> = Retained::into_super(self.retain());
             state.poll_timer = Some(
                 NSTimer::scheduledTimerWithTimeInterval_target_selector_userInfo_repeats(
                     interval,
@@ -311,7 +337,11 @@ impl AppDelegate {
         if threshold > 1.0 {
             state.push_log(format!("{} Usage alert disabled", timestamp()));
         } else {
-            state.push_log(format!("{} Alert threshold set to {}%", timestamp(), (threshold * 100.0) as u32));
+            state.push_log(format!(
+                "{} Alert threshold set to {}%",
+                timestamp(),
+                (threshold * 100.0) as u32
+            ));
         }
         drop(state);
         save_preferences(interval, threshold, self.ivars().borrow().polling_enabled);
@@ -330,7 +360,12 @@ impl AppDelegate {
             if util >= threshold && !state.alert_fired {
                 state.alert_fired = true;
                 let pct = (util * 100.0) as u32;
-                state.push_log(format!("{} Alert: {} usage at {}%", timestamp(), primary.label, pct));
+                state.push_log(format!(
+                    "{} Alert: {} usage at {}%",
+                    timestamp(),
+                    primary.label,
+                    pct
+                ));
                 drop(state);
                 let body = format!("{} window usage is at {}%", primary.label, pct);
                 let _ = std::process::Command::new("osascript")
@@ -347,7 +382,11 @@ impl AppDelegate {
 
     fn set_interval(&self, seconds: f64) {
         let mut state = self.ivars().borrow_mut();
-        state.push_log(format!("{} Poll interval changed to {}s", timestamp(), seconds as u64));
+        state.push_log(format!(
+            "{} Poll interval changed to {}s",
+            timestamp(),
+            seconds as u64
+        ));
         drop(state);
         self.start_timer(seconds);
         let state = self.ivars().borrow();
@@ -358,16 +397,21 @@ impl AppDelegate {
     fn set_icon(&self, icon: &NSImage) {
         let state = self.ivars().borrow();
         let mtm = state.mtm;
-        if let Some(ref si) = state.status_item {
-            if let Some(button) = si.button(mtm) {
-                button.setImage(Some(icon));
-                button.setTitle(&NSString::from_str(""));
-            }
+        if let Some(ref si) = state.status_item
+            && let Some(button) = si.button(mtm)
+        {
+            button.setImage(Some(icon));
+            button.setTitle(&NSString::from_str(""));
         }
     }
 
     fn fetch_and_update(&self) {
         let mut state = self.ivars().borrow_mut();
+
+        if state.fetch_in_progress {
+            return;
+        }
+        state.fetch_in_progress = true;
         state.push_log(format!("{} Fetching usage data...", timestamp()));
 
         // Check if cached token has expired
@@ -376,78 +420,132 @@ impl AppDelegate {
             None => state.cached_token.is_none(),
         };
 
-        if token_expired {
+        let cached_token = state.cached_token.clone();
+
+        // Read credentials on main thread (keychain is local/fast) only if needed
+        let credentials = if token_expired {
             state.cached_token = None;
             state.cached_token_expires = None;
+            keychain::read_credentials()
+        } else {
+            None
+        };
 
-            if let Some(creds) = keychain::read_credentials() {
-                if let Some(result) = api::get_access_token(&creds) {
-                    state.cached_token = Some(result.access_token);
-                    if let Some(expires_in) = result.expires_in_secs {
-                        // Expire 60s early to avoid using a nearly-expired token
-                        let buffer = expires_in.saturating_sub(60);
-                        state.cached_token_expires = Some(
-                            std::time::Instant::now() + std::time::Duration::from_secs(buffer)
-                        );
-                    }
-                }
-            } else {
-                state.push_log(format!("{} [ERROR] No credentials found", timestamp()));
-                drop(state);
-                self.show_error();
-                return;
-            }
-        }
+        drop(state);
 
-        let Some(token) = state.cached_token.clone() else {
-            state.push_log(format!("{} [ERROR] No access token", timestamp()));
+        if token_expired && credentials.is_none() {
+            let mut state = self.ivars().borrow_mut();
+            state.push_log(format!("{} [ERROR] No credentials found", timestamp()));
+            state.fetch_in_progress = false;
             drop(state);
             self.show_error();
             return;
-        };
-        drop(state);
-
-        match api::fetch_usage(&token) {
-            FetchResult::Ok(data) => {
-                let windows = api::parse_usage(&data);
-                let primary = windows.iter().find(|w| w.label == "5h").cloned()
-                    .or_else(|| windows.first().cloned());
-
-                let mut state = self.ivars().borrow_mut();
-                state.push_log(format!("{} Got {} usage windows", timestamp(), windows.len()));
-                state.rate_limit_backoff = 0;
-                state.last_windows = windows;
-                state.last_primary = primary.clone();
-                drop(state);
-
-                if let Some(ref p) = primary {
-                    self.set_icon(&gauge::create_gauge_icon(p.utilization, ICON_SIZE));
-                } else {
-                    self.set_icon(&gauge::create_gauge_icon(0.0, ICON_SIZE));
-                }
-                self.check_and_fire_alert();
-                self.rebuild_menu();
-            }
-            FetchResult::RateLimited(retry_after) => {
-                self.enter_rate_limit_pause(retry_after);
-            }
-            FetchResult::AuthError => {
-                let mut state = self.ivars().borrow_mut();
-                state.cached_token = None;
-                state.cached_token_expires = None;
-                state.push_log(format!("{} [WARN] Auth error, will retry", timestamp()));
-                drop(state);
-                self.show_error();
-            }
-            FetchResult::Error(e) => {
-                let mut state = self.ivars().borrow_mut();
-                state.cached_token = None;
-                state.cached_token_expires = None;
-                state.push_log(format!("{} [ERROR] {}", timestamp(), e));
-                drop(state);
-                self.show_error();
-            }
         }
+
+        // Pointer to self for use in the dispatch-back closure.
+        // Safe because AppDelegate is mem::forget-ed and lives for the app lifetime.
+        let self_ptr = self as *const AppDelegate as usize;
+
+        std::thread::spawn(move || {
+            // --- Background thread: all network I/O happens here ---
+            let (token, new_token_info) = if token_expired {
+                let creds = credentials.unwrap(); // safe: checked above
+                match api::get_access_token(&creds) {
+                    Some(result) => {
+                        let info = (result.access_token.clone(), result.expires_in_secs);
+                        (Some(result.access_token), Some(info))
+                    }
+                    None => (None, None),
+                }
+            } else {
+                (cached_token, None)
+            };
+
+            let Some(token) = token else {
+                dispatch_main(move || {
+                    let app = unsafe { &*(self_ptr as *const AppDelegate) };
+                    let mut state = app.ivars().borrow_mut();
+                    state.push_log(format!("{} [ERROR] No access token", timestamp()));
+                    state.fetch_in_progress = false;
+                    drop(state);
+                    app.show_error();
+                });
+                return;
+            };
+
+            let fetch_result = api::fetch_usage(&token);
+
+            // --- Dispatch back to main thread for UI updates ---
+            dispatch_main(move || {
+                let app = unsafe { &*(self_ptr as *const AppDelegate) };
+
+                // Update token cache if we refreshed
+                if let Some((new_token, expires_in)) = new_token_info {
+                    let mut state = app.ivars().borrow_mut();
+                    state.cached_token = Some(new_token);
+                    if let Some(secs) = expires_in {
+                        let buffer = secs.saturating_sub(60);
+                        state.cached_token_expires = Some(
+                            std::time::Instant::now() + std::time::Duration::from_secs(buffer),
+                        );
+                    }
+                    drop(state);
+                }
+
+                match fetch_result {
+                    FetchResult::Ok(data) => {
+                        let windows = api::parse_usage(&data);
+                        let primary = windows
+                            .iter()
+                            .find(|w| w.label == "5h")
+                            .cloned()
+                            .or_else(|| windows.first().cloned());
+
+                        let mut state = app.ivars().borrow_mut();
+                        state.push_log(format!(
+                            "{} Got {} usage windows",
+                            timestamp(),
+                            windows.len()
+                        ));
+                        state.rate_limit_backoff = 0;
+                        state.last_windows = windows;
+                        state.last_primary = primary.clone();
+                        state.fetch_in_progress = false;
+                        drop(state);
+
+                        if let Some(ref p) = primary {
+                            app.set_icon(&gauge::create_gauge_icon(p.utilization, ICON_SIZE));
+                        } else {
+                            app.set_icon(&gauge::create_gauge_icon(0.0, ICON_SIZE));
+                        }
+                        app.check_and_fire_alert();
+                        app.rebuild_menu();
+                    }
+                    FetchResult::RateLimited(retry_after) => {
+                        app.ivars().borrow_mut().fetch_in_progress = false;
+                        app.enter_rate_limit_pause(retry_after);
+                    }
+                    FetchResult::AuthError => {
+                        let mut state = app.ivars().borrow_mut();
+                        state.cached_token = None;
+                        state.cached_token_expires = None;
+                        state.push_log(format!("{} [WARN] Auth error, will retry", timestamp()));
+                        state.fetch_in_progress = false;
+                        drop(state);
+                        app.show_error();
+                    }
+                    FetchResult::Error(e) => {
+                        let mut state = app.ivars().borrow_mut();
+                        state.cached_token = None;
+                        state.cached_token_expires = None;
+                        state.push_log(format!("{} [ERROR] {}", timestamp(), e));
+                        state.fetch_in_progress = false;
+                        drop(state);
+                        app.show_error();
+                    }
+                }
+            });
+        });
     }
 
     fn show_error(&self) {
@@ -482,7 +580,9 @@ impl AppDelegate {
         let backoff = state.rate_limit_backoff;
         state.push_log(format!(
             "{} Pausing polling for {}s due to rate limit (attempt {})",
-            timestamp(), pause, backoff
+            timestamp(),
+            pause,
+            backoff
         ));
 
         if let Some(ref t) = state.rate_limit_timer {
@@ -493,9 +593,7 @@ impl AppDelegate {
         }
 
         unsafe {
-            let this: Retained<NSObject> = Retained::into_super(
-                self.retain(),
-            );
+            let this: Retained<NSObject> = Retained::into_super(self.retain());
             state.rate_limit_timer = Some(
                 NSTimer::scheduledTimerWithTimeInterval_target_selector_userInfo_repeats(
                     pause as f64,
@@ -505,9 +603,7 @@ impl AppDelegate {
                     false,
                 ),
             );
-            let this2: Retained<NSObject> = Retained::into_super(
-                self.retain(),
-            );
+            let this2: Retained<NSObject> = Retained::into_super(self.retain());
             state.rate_limit_countdown_timer = Some(
                 NSTimer::scheduledTimerWithTimeInterval_target_selector_userInfo_repeats(
                     10.0,
@@ -552,25 +648,34 @@ impl AppDelegate {
                 .unwrap_or_else(|| NSFont::systemFontOfSize(11.0));
 
             // Rate-limit banner
-            if state.rate_limited {
-                if let Some(ref resume_at) = state.rate_limit_resume {
-                    let remaining = resume_at.saturating_duration_since(Instant::now()).as_secs();
-                    let mins = remaining / 60;
-                    let secs = remaining % 60;
-                    let banner = styled_item(
-                        &format!("\u{26a0}\u{fe0f}  Rate limited \u{2014} polling paused ({mins}m {secs}s)"),
-                        &mono,
-                        Some(&NSColor::systemOrangeColor()),
-                        mtm,
-                    );
-                    menu.addItem(&banner);
-                    menu.addItem(&NSMenuItem::separatorItem(mtm));
-                }
+            if state.rate_limited
+                && let Some(ref resume_at) = state.rate_limit_resume
+            {
+                let remaining = resume_at
+                    .saturating_duration_since(Instant::now())
+                    .as_secs();
+                let mins = remaining / 60;
+                let secs = remaining % 60;
+                let banner = styled_item(
+                    &format!(
+                        "\u{26a0}\u{fe0f}  Rate limited \u{2014} polling paused ({mins}m {secs}s)"
+                    ),
+                    &mono,
+                    Some(&NSColor::systemOrangeColor()),
+                    mtm,
+                );
+                menu.addItem(&banner);
+                menu.addItem(&NSMenuItem::separatorItem(mtm));
             }
 
             // Usage windows
             if state.last_windows.is_empty() {
-                menu.addItem(&styled_item("Loading...", &mono, Some(&NSColor::secondaryLabelColor()), mtm));
+                menu.addItem(&styled_item(
+                    "Loading...",
+                    &mono,
+                    Some(&NSColor::secondaryLabelColor()),
+                    mtm,
+                ));
             } else {
                 for w in &state.last_windows {
                     let pct = (w.utilization * 100.0) as i32;
@@ -593,14 +698,21 @@ impl AppDelegate {
             }
 
             // Actions
-            let this: Retained<NSObject> = Retained::into_super(
-                self.retain(),
-            );
+            let this: Retained<NSObject> = Retained::into_super(self.retain());
 
             menu.addItem(&action_item("Refresh Now", sel!(refresh:), &this, mtm));
 
-            let polling_label = if state.polling_enabled { "Polling: On" } else { "Polling: Off" };
-            menu.addItem(&action_item(polling_label, sel!(togglePolling:), &this, mtm));
+            let polling_label = if state.polling_enabled {
+                "Polling: On"
+            } else {
+                "Polling: Off"
+            };
+            menu.addItem(&action_item(
+                polling_label,
+                sel!(togglePolling:),
+                &this,
+                mtm,
+            ));
 
             // Interval submenu
             let interval_item = NSMenuItem::new(mtm);
@@ -661,7 +773,12 @@ impl AppDelegate {
             } else {
                 "Start at Login: Off"
             };
-            menu.addItem(&action_item(login_label, sel!(toggleLoginItem:), &this, mtm));
+            menu.addItem(&action_item(
+                login_label,
+                sel!(toggleLoginItem:),
+                &this,
+                mtm,
+            ));
 
             menu.addItem(&NSMenuItem::separatorItem(mtm));
 
@@ -673,7 +790,12 @@ impl AppDelegate {
             let log_font = NSFont::fontWithName_size(&NSString::from_str("Menlo"), 10.0)
                 .unwrap_or_else(|| NSFont::systemFontOfSize(10.0));
             if state.log_buffer.is_empty() {
-                logs_menu.addItem(&styled_item("(no logs yet)", &log_font, Some(&NSColor::secondaryLabelColor()), mtm));
+                logs_menu.addItem(&styled_item(
+                    "(no logs yet)",
+                    &log_font,
+                    Some(&NSColor::secondaryLabelColor()),
+                    mtm,
+                ));
             } else {
                 let start = state.log_buffer.len().saturating_sub(10);
                 for line in &state.log_buffer[start..] {
@@ -731,13 +853,20 @@ impl AppDelegate {
     }
 }
 
-fn styled_item(text: &str, font: &NSFont, color: Option<&NSColor>, mtm: MainThreadMarker) -> Retained<NSMenuItem> {
+fn styled_item(
+    text: &str,
+    font: &NSFont,
+    color: Option<&NSColor>,
+    mtm: MainThreadMarker,
+) -> Retained<NSMenuItem> {
     let item = NSMenuItem::new(mtm);
 
     let (keys, actual_color) = unsafe {
         (
             [NSFontAttributeName, NSForegroundColorAttributeName],
-            color.map(|c| c.retain()).unwrap_or_else(|| NSColor::labelColor()),
+            color
+                .map(|c| c.retain())
+                .unwrap_or_else(NSColor::labelColor),
         )
     };
     let vals: [Retained<AnyObject>; 2] = [
@@ -758,7 +887,13 @@ fn styled_item(text: &str, font: &NSFont, color: Option<&NSColor>, mtm: MainThre
     item
 }
 
-fn gradient_bar_item(label: &str, utilization: f64, width: usize, font: &NSFont, mtm: MainThreadMarker) -> Retained<NSMenuItem> {
+fn gradient_bar_item(
+    label: &str,
+    utilization: f64,
+    width: usize,
+    font: &NSFont,
+    mtm: MainThreadMarker,
+) -> Retained<NSMenuItem> {
     let item = NSMenuItem::new(mtm);
     let filled = ((utilization * width as f64) as usize).min(width);
 
@@ -806,7 +941,12 @@ fn gradient_bar_item(label: &str, utilization: f64, width: usize, font: &NSFont,
     item
 }
 
-fn action_item(title: &str, action: Sel, target: &NSObject, mtm: MainThreadMarker) -> Retained<NSMenuItem> {
+fn action_item(
+    title: &str,
+    action: Sel,
+    target: &NSObject,
+    mtm: MainThreadMarker,
+) -> Retained<NSMenuItem> {
     let item = NSMenuItem::new(mtm);
     item.setTitle(&NSString::from_str(title));
     unsafe {
@@ -829,12 +969,26 @@ fn load_preferences() -> (f64, f64, bool) {
     let threshold = defaults.doubleForKey(&NSString::from_str("alert_threshold"));
 
     // doubleForKey returns 0.0 if not set — use defaults in that case
-    let interval = if interval > 0.0 { interval } else { POLL_INTERVAL_DEFAULT };
-    let threshold = if threshold > 0.0 { threshold } else { ALERT_THRESHOLD_DEFAULT };
+    let interval = if interval > 0.0 {
+        interval
+    } else {
+        POLL_INTERVAL_DEFAULT
+    };
+    let threshold = if threshold > 0.0 {
+        threshold
+    } else {
+        ALERT_THRESHOLD_DEFAULT
+    };
 
     // boolForKey returns false if not set — default to true (polling on)
-    let has_key = defaults.objectForKey(&NSString::from_str("polling_enabled")).is_some();
-    let polling = if has_key { defaults.boolForKey(&NSString::from_str("polling_enabled")) } else { true };
+    let has_key = defaults
+        .objectForKey(&NSString::from_str("polling_enabled"))
+        .is_some();
+    let polling = if has_key {
+        defaults.boolForKey(&NSString::from_str("polling_enabled"))
+    } else {
+        true
+    };
 
     (interval, threshold, polling)
 }

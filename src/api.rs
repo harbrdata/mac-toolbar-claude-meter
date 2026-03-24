@@ -28,20 +28,32 @@ pub fn get_access_token(creds: &serde_json::Value) -> Option<TokenResult> {
         .as_millis() as u64;
 
     if expires_at > 0 && now_ms < expires_at {
-        let token = creds.get("accessToken").and_then(|v| v.as_str()).map(String::from)?;
+        let token = creds
+            .get("accessToken")
+            .and_then(|v| v.as_str())
+            .map(String::from)?;
         let remaining_secs = (expires_at - now_ms) / 1000;
-        return Some(TokenResult { access_token: token, expires_in_secs: Some(remaining_secs) });
+        return Some(TokenResult {
+            access_token: token,
+            expires_in_secs: Some(remaining_secs),
+        });
     }
 
     // Try refresh
-    if let Some(refresh_token) = creds.get("refreshToken").and_then(|v| v.as_str()) {
-        if let Some(tr) = refresh_access_token(refresh_token) {
-            return Some(tr);
-        }
+    if let Some(refresh_token) = creds.get("refreshToken").and_then(|v| v.as_str())
+        && let Some(tr) = refresh_access_token(refresh_token)
+    {
+        return Some(tr);
     }
 
-    let token = creds.get("accessToken").and_then(|v| v.as_str()).map(String::from)?;
-    Some(TokenResult { access_token: token, expires_in_secs: None })
+    let token = creds
+        .get("accessToken")
+        .and_then(|v| v.as_str())
+        .map(String::from)?;
+    Some(TokenResult {
+        access_token: token,
+        expires_in_secs: None,
+    })
 }
 
 fn refresh_access_token(refresh_token: &str) -> Option<TokenResult> {
@@ -56,12 +68,16 @@ fn refresh_access_token(refresh_token: &str) -> Option<TokenResult> {
         .ok()?;
 
     let json: serde_json::Value = resp.body_mut().read_json().ok()?;
-    let token = json.get("access_token")
+    let token = json
+        .get("access_token")
         .or_else(|| json.get("accessToken"))
         .and_then(|v| v.as_str())
         .map(String::from)?;
     let expires_in = json.get("expires_in").and_then(|v| v.as_u64());
-    Some(TokenResult { access_token: token, expires_in_secs: expires_in })
+    Some(TokenResult {
+        access_token: token,
+        expires_in_secs: expires_in,
+    })
 }
 
 /// Fetch usage data from the Anthropic API.

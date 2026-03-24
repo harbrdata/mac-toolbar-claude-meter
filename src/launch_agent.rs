@@ -80,7 +80,10 @@ pub fn rotate_log_if_needed() {
     if let Ok(contents) = fs::read_to_string(&path) {
         let half = contents.len() / 2;
         // Find the next newline after the midpoint to avoid splitting a line
-        let start = contents[half..].find('\n').map(|i| half + i + 1).unwrap_or(half);
+        let start = contents[half..]
+            .find('\n')
+            .map(|i| half + i + 1)
+            .unwrap_or(half);
         let _ = fs::write(&path, &contents[start..]);
     }
 }
