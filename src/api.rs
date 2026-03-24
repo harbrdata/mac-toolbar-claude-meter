@@ -24,7 +24,7 @@ pub fn get_access_token(creds: &serde_json::Value) -> Option<TokenResult> {
     let expires_at = creds.get("expiresAt").and_then(|v| v.as_u64()).unwrap_or(0);
     let now_ms = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .unwrap()
+        .unwrap_or_default()
         .as_millis() as u64;
 
     if expires_at > 0 && now_ms < expires_at {
