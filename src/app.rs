@@ -1,4 +1,4 @@
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::ffi::c_void;
 use std::fs::OpenOptions;
 use std::io::Write;
@@ -82,6 +82,14 @@ const LOG_CAPACITY: usize = 20;
 const ALERT_THRESHOLD_DEFAULT: f64 = 0.95;
 const ALERT_THRESHOLD_OPTIONS: &[u64] = &[75, 80, 85, 90, 95, 100];
 
+/// Ivars wrapper: `fetch_in_progress` is a `Cell<bool>` so it can be checked/set
+/// without borrowing the full `AppState` through the `RefCell`, eliminating a class
+/// of potential borrow panics.
+pub struct AppIvars {
+    state: RefCell<AppState>,
+    fetch_in_progress: Cell<bool>,
+}
+
 pub struct AppState {
     mtm: MainThreadMarker,
     status_item: Option<Retained<NSStatusItem>>,
@@ -102,7 +110,6 @@ pub struct AppState {
     log_write_count: u32,
     alert_threshold: f64,
     alert_fired: bool,
-    fetch_in_progress: bool,
 }
 
 impl AppState {
@@ -129,7 +136,7 @@ define_class!(
     #[unsafe(super(NSObject))]
     #[thread_kind = MainThreadOnly]
     #[name = "AppDelegate"]
-    #[ivars = RefCell<AppState>]
+    #[ivars = AppIvars]
     pub struct AppDelegate;
 
     impl AppDelegate {
@@ -148,13 +155,13 @@ define_class!(
             // If the .app bundle was deleted, clean up and quit
             if !std::path::Path::new("/Applications/Claude-o-Meter.app").exists() {
                 launch_agent::cleanup_if_uninstalled();
-                let state = self.ivars().borrow();
+                let state = self.ivars().state.borrow();
                 let app = NSApplication::sharedApplication(state.mtm);
                 app.terminate(None);
                 return;
             }
 
-            let state = self.ivars().borrow();
+            let state = self.ivars().state.borrow();
             if !state.polling_enabled || state.rate_limited {
                 return;
             }
@@ -170,7 +177,7 @@ define_class!(
 
         #[unsafe(method(togglePolling:))]
         fn toggle_polling(&self, _sender: &AnyObject) {
-            let mut state = self.ivars().borrow_mut();
+            let mut state = self.ivars().state.borrow_mut();
             state.polling_enabled = !state.polling_enabled;
 
             if state.polling_enabled {
@@ -178,7 +185,7 @@ define_class!(
                 let interval = state.poll_interval;
                 drop(state);
                 self.start_timer(interval);
-                let state = self.ivars().borrow();
+                let state = self.ivars().state.borrow();
                 if let Some(ref primary) = state.last_primary {
                     self.set_icon(&gauge::create_gauge_icon(primary.utilization, ICON_SIZE));
                 }
@@ -191,7 +198,7 @@ define_class!(
                 drop(state);
                 self.set_icon(&gauge::create_paused_icon(ICON_SIZE));
             }
-            let state = self.ivars().borrow();
+            let state = self.ivars().state.borrow();
             save_preferences(state.poll_interval, state.alert_threshold, state.polling_enabled);
             drop(state);
             self.rebuild_menu();
@@ -231,7 +238,7 @@ define_class!(
 
         #[unsafe(method(rateLimitResume:))]
         fn rate_limit_resume(&self, _timer: &NSTimer) {
-            let mut state = self.ivars().borrow_mut();
+            let mut state = self.ivars().state.borrow_mut();
             state.push_log(format!("{} Rate-limit pause expired, resuming", timestamp()));
             drop(state);
             self.clear_rate_limit();
@@ -240,7 +247,7 @@ define_class!(
 
         #[unsafe(method(rateLimitCountdown:))]
         fn rate_limit_countdown(&self, _timer: &NSTimer) {
-            let state = self.ivars().borrow();
+            let state = self.ivars().state.borrow();
             if state.rate_limited {
                 drop(state);
                 self.rebuild_menu();
@@ -249,7 +256,7 @@ define_class!(
 
         #[unsafe(method(quit:))]
         fn quit(&self, _sender: &AnyObject) {
-            let state = self.ivars().borrow();
+            let state = self.ivars().state.borrow();
             let app = NSApplication::sharedApplication(state.mtm);
             app.terminate(None);
         }
@@ -262,33 +269,35 @@ impl AppDelegate {
         let (saved_interval, saved_threshold, saved_polling) = load_preferences();
 
         let this = mtm.alloc::<AppDelegate>();
-        let this = this.set_ivars(RefCell::new(AppState {
-            mtm,
-            status_item: None,
-            menu: None,
-            poll_interval: saved_interval,
-            poll_timer: None,
-            polling_enabled: saved_polling,
-            last_windows: Vec::new(),
-            last_primary: None,
-            rate_limited: false,
-            rate_limit_resume: None,
-            rate_limit_backoff: 0,
-            rate_limit_timer: None,
-            rate_limit_countdown_timer: None,
-            cached_token: None,
-            cached_token_expires: None,
-            log_buffer: Vec::new(),
-            log_write_count: 0,
-            alert_threshold: saved_threshold,
-            alert_fired: false,
-            fetch_in_progress: false,
-        }));
+        let this = this.set_ivars(AppIvars {
+            state: RefCell::new(AppState {
+                mtm,
+                status_item: None,
+                menu: None,
+                poll_interval: saved_interval,
+                poll_timer: None,
+                polling_enabled: saved_polling,
+                last_windows: Vec::new(),
+                last_primary: None,
+                rate_limited: false,
+                rate_limit_resume: None,
+                rate_limit_backoff: 0,
+                rate_limit_timer: None,
+                rate_limit_countdown_timer: None,
+                cached_token: None,
+                cached_token_expires: None,
+                log_buffer: Vec::new(),
+                log_write_count: 0,
+                alert_threshold: saved_threshold,
+                alert_fired: false,
+            }),
+            fetch_in_progress: Cell::new(false),
+        });
         unsafe { msg_send![super(this), init] }
     }
 
     fn mtm(&self) -> MainThreadMarker {
-        self.ivars().borrow().mtm
+        self.ivars().state.borrow().mtm
     }
 
     fn setup(&self) {
@@ -310,7 +319,7 @@ impl AppDelegate {
             status_item.setMenu(Some(&menu));
 
             {
-                let mut state = self.ivars().borrow_mut();
+                let mut state = self.ivars().state.borrow_mut();
                 state.status_item = Some(status_item);
                 state.menu = Some(menu);
                 state.push_log(format!("{} Claude Meter starting...", timestamp()));
@@ -327,7 +336,7 @@ impl AppDelegate {
                 false,
             );
 
-            let state = self.ivars().borrow();
+            let state = self.ivars().state.borrow();
             let saved_interval = state.poll_interval;
             let polling = state.polling_enabled;
             drop(state);
@@ -341,7 +350,7 @@ impl AppDelegate {
     }
 
     fn start_timer(&self, interval: f64) {
-        let mut state = self.ivars().borrow_mut();
+        let mut state = self.ivars().state.borrow_mut();
         if let Some(ref timer) = state.poll_timer {
             timer.invalidate();
         }
@@ -361,7 +370,7 @@ impl AppDelegate {
     }
 
     fn set_alert_threshold(&self, threshold: f64) {
-        let mut state = self.ivars().borrow_mut();
+        let mut state = self.ivars().state.borrow_mut();
         state.alert_threshold = threshold;
         state.alert_fired = false;
         let interval = state.poll_interval;
@@ -375,12 +384,16 @@ impl AppDelegate {
             ));
         }
         drop(state);
-        save_preferences(interval, threshold, self.ivars().borrow().polling_enabled);
+        save_preferences(
+            interval,
+            threshold,
+            self.ivars().state.borrow().polling_enabled,
+        );
         self.rebuild_menu();
     }
 
     fn check_and_fire_alert(&self) {
-        let mut state = self.ivars().borrow_mut();
+        let mut state = self.ivars().state.borrow_mut();
         let threshold = state.alert_threshold;
         if threshold > 1.0 {
             return; // alerts disabled
@@ -412,7 +425,7 @@ impl AppDelegate {
     }
 
     fn set_interval(&self, seconds: f64) {
-        let mut state = self.ivars().borrow_mut();
+        let mut state = self.ivars().state.borrow_mut();
         state.push_log(format!(
             "{} Poll interval changed to {}s",
             timestamp(),
@@ -420,13 +433,13 @@ impl AppDelegate {
         ));
         drop(state);
         self.start_timer(seconds);
-        let state = self.ivars().borrow();
+        let state = self.ivars().state.borrow();
         save_preferences(seconds, state.alert_threshold, state.polling_enabled);
         self.rebuild_menu();
     }
 
     fn set_icon(&self, icon: &NSImage) {
-        let state = self.ivars().borrow();
+        let state = self.ivars().state.borrow();
         let mtm = state.mtm;
         if let Some(ref si) = state.status_item
             && let Some(button) = si.button(mtm)
@@ -437,12 +450,12 @@ impl AppDelegate {
     }
 
     fn fetch_and_update(&self) {
-        let mut state = self.ivars().borrow_mut();
-
-        if state.fetch_in_progress {
+        if self.ivars().fetch_in_progress.get() {
             return;
         }
-        state.fetch_in_progress = true;
+        self.ivars().fetch_in_progress.set(true);
+
+        let mut state = self.ivars().state.borrow_mut();
         state.push_log(format!("{} Fetching usage data...", timestamp()));
 
         // Check if cached token has expired
@@ -465,10 +478,10 @@ impl AppDelegate {
         drop(state);
 
         if token_expired && credentials.is_none() {
-            let mut state = self.ivars().borrow_mut();
+            let mut state = self.ivars().state.borrow_mut();
             state.push_log(format!("{} [ERROR] No credentials found", timestamp()));
-            state.fetch_in_progress = false;
             drop(state);
+            self.ivars().fetch_in_progress.set(false);
             self.show_error();
             return;
         }
@@ -494,10 +507,10 @@ impl AppDelegate {
                 dispatch_main(move || {
                     // SAFETY: dispatch_main runs on the main thread; AppDelegate is process-lived.
                     let app = unsafe { handle.get() };
-                    let mut state = app.ivars().borrow_mut();
+                    let mut state = app.ivars().state.borrow_mut();
                     state.push_log(format!("{} [ERROR] No access token", timestamp()));
-                    state.fetch_in_progress = false;
                     drop(state);
+                    app.ivars().fetch_in_progress.set(false);
                     app.show_error();
                 });
                 return;
@@ -512,7 +525,7 @@ impl AppDelegate {
 
                 // Update token cache if we refreshed
                 if let Some((new_token, expires_in)) = new_token_info {
-                    let mut state = app.ivars().borrow_mut();
+                    let mut state = app.ivars().state.borrow_mut();
                     state.cached_token = Some(new_token);
                     if let Some(secs) = expires_in {
                         let buffer = secs.saturating_sub(60);
@@ -532,7 +545,7 @@ impl AppDelegate {
                             .cloned()
                             .or_else(|| windows.first().cloned());
 
-                        let mut state = app.ivars().borrow_mut();
+                        let mut state = app.ivars().state.borrow_mut();
                         state.push_log(format!(
                             "{} Got {} usage windows",
                             timestamp(),
@@ -541,8 +554,8 @@ impl AppDelegate {
                         state.rate_limit_backoff = 0;
                         state.last_windows = windows;
                         state.last_primary = primary.clone();
-                        state.fetch_in_progress = false;
                         drop(state);
+                        app.ivars().fetch_in_progress.set(false);
 
                         if let Some(ref p) = primary {
                             app.set_icon(&gauge::create_gauge_icon(p.utilization, ICON_SIZE));
@@ -553,25 +566,25 @@ impl AppDelegate {
                         app.rebuild_menu();
                     }
                     FetchResult::RateLimited(retry_after) => {
-                        app.ivars().borrow_mut().fetch_in_progress = false;
+                        app.ivars().fetch_in_progress.set(false);
                         app.enter_rate_limit_pause(retry_after);
                     }
                     FetchResult::AuthError => {
-                        let mut state = app.ivars().borrow_mut();
+                        let mut state = app.ivars().state.borrow_mut();
                         state.cached_token = None;
                         state.cached_token_expires = None;
                         state.push_log(format!("{} [WARN] Auth error, will retry", timestamp()));
-                        state.fetch_in_progress = false;
                         drop(state);
+                        app.ivars().fetch_in_progress.set(false);
                         app.show_error();
                     }
                     FetchResult::Error(e) => {
-                        let mut state = app.ivars().borrow_mut();
+                        let mut state = app.ivars().state.borrow_mut();
                         state.cached_token = None;
                         state.cached_token_expires = None;
                         state.push_log(format!("{} [ERROR] {}", timestamp(), e));
-                        state.fetch_in_progress = false;
                         drop(state);
+                        app.ivars().fetch_in_progress.set(false);
                         app.show_error();
                     }
                 }
@@ -580,7 +593,7 @@ impl AppDelegate {
     }
 
     fn show_error(&self) {
-        let state = self.ivars().borrow();
+        let state = self.ivars().state.borrow();
         if !state.last_windows.is_empty() {
             let primary = state.last_primary.clone();
             drop(state);
@@ -596,7 +609,7 @@ impl AppDelegate {
     }
 
     fn enter_rate_limit_pause(&self, retry_after: u64) {
-        let mut state = self.ivars().borrow_mut();
+        let mut state = self.ivars().state.borrow_mut();
         state.rate_limit_backoff += 1;
 
         let pause = if retry_after > 0 {
@@ -652,7 +665,7 @@ impl AppDelegate {
     }
 
     fn clear_rate_limit(&self) {
-        let mut state = self.ivars().borrow_mut();
+        let mut state = self.ivars().state.borrow_mut();
         state.rate_limited = false;
         state.rate_limit_backoff = 0;
         state.rate_limit_resume = None;
@@ -667,7 +680,7 @@ impl AppDelegate {
     }
 
     fn rebuild_menu(&self) {
-        let state = self.ivars().borrow();
+        let state = self.ivars().state.borrow();
         let Some(ref menu) = state.menu else { return };
         let mtm = state.mtm;
 
