@@ -16,6 +16,7 @@ use crate::api::{self, FetchResult, UsageWindow};
 use crate::gauge;
 use crate::keychain;
 use crate::launch_agent;
+use crate::notification;
 
 // GCD FFI for dispatching closures back to the main thread.
 unsafe extern "C" {
@@ -316,6 +317,7 @@ impl AppDelegate {
     fn setup(&self) {
         let _ = std::fs::create_dir_all(launch_agent::log_dir());
         launch_agent::rotate_log_if_needed();
+        notification::request_authorization();
 
         let mtm = self.mtm();
         unsafe {
@@ -402,6 +404,8 @@ impl AppDelegate {
             threshold,
             self.ivars().state.borrow().polling_enabled,
         );
+        // Immediately check if current usage exceeds the new threshold
+        self.check_and_fire_alert();
         self.rebuild_menu();
     }
 
@@ -425,12 +429,7 @@ impl AppDelegate {
                 ));
                 drop(state);
                 let body = format!("{} window usage is at {}%", primary.label, pct);
-                let _ = std::process::Command::new("osascript")
-                    .args(["-e", &format!(
-                        "display notification \"{}\" with title \"Claude Meter\" subtitle \"Usage alert\"",
-                        body
-                    )])
-                    .spawn();
+                notification::post("Claude Meter", "Usage alert", &body);
             } else if util < threshold && state.alert_fired {
                 state.alert_fired = false;
             }
