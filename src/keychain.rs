@@ -15,7 +15,13 @@ pub fn read_credentials() -> Option<serde_json::Value> {
     }
 
     let raw = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    let mut data: serde_json::Value = serde_json::from_str(&raw).ok()?;
+    let mut data: serde_json::Value = match serde_json::from_str(&raw) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("Keychain JSON parse error: {e}");
+            return None;
+        }
+    };
 
     if data.get("claudeAiOauth").is_some() {
         data = data["claudeAiOauth"].take();
