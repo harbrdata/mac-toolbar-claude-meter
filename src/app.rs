@@ -27,18 +27,49 @@ unsafe extern "C" {
     );
 }
 
-/// Run a closure on the main thread via GCD dispatch_async.
+/// Run a closure on the main thread via GCD `dispatch_async`.
 fn dispatch_main<F: FnOnce() + Send + 'static>(f: F) {
     let boxed: Box<Box<dyn FnOnce() + Send>> = Box::new(Box::new(f));
     let raw = Box::into_raw(boxed) as *mut c_void;
 
     extern "C" fn trampoline(context: *mut c_void) {
+        // SAFETY: `context` was created by `Box::into_raw` in `dispatch_main` and is
+        // guaranteed to be called exactly once by GCD's `dispatch_async`.
         let boxed: Box<Box<dyn FnOnce() + Send>> = unsafe { Box::from_raw(context as *mut _) };
         boxed();
     }
 
+    // SAFETY: `_dispatch_main_q` is the global main queue provided by libdispatch.
+    // `dispatch_async_f` takes ownership of `raw` and calls `trampoline` exactly once.
     unsafe {
         dispatch_async_f(&_dispatch_main_q as *const c_void, raw, trampoline);
+    }
+}
+
+/// A `Send`-safe handle to the `AppDelegate` for use in `dispatch_main` closures.
+///
+/// # Safety
+/// The wrapped pointer must only be dereferenced on the main thread (via `dispatch_main`).
+/// The `AppDelegate` instance must outlive all `MainThreadHandle` copies — guaranteed
+/// because `AppDelegate` is `mem::forget`-ed in `run()` and lives for the process lifetime.
+struct MainThreadHandle(usize);
+
+// SAFETY: The pointer is never dereferenced off the main thread. Background threads
+// only carry the handle; all dereferences happen inside `dispatch_main` closures which
+// execute on the main thread via GCD.
+unsafe impl Send for MainThreadHandle {}
+
+impl MainThreadHandle {
+    fn new(delegate: &AppDelegate) -> Self {
+        Self(delegate as *const AppDelegate as usize)
+    }
+
+    /// Recover the `AppDelegate` reference. Must only be called on the main thread.
+    ///
+    /// # Safety
+    /// Caller must be on the main thread and the `AppDelegate` must still be alive.
+    unsafe fn get(&self) -> &AppDelegate {
+        unsafe { &*(self.0 as *const AppDelegate) }
     }
 }
 
@@ -442,9 +473,7 @@ impl AppDelegate {
             return;
         }
 
-        // Pointer to self for use in the dispatch-back closure.
-        // Safe because AppDelegate is mem::forget-ed and lives for the app lifetime.
-        let self_ptr = self as *const AppDelegate as usize;
+        let handle = MainThreadHandle::new(self);
 
         std::thread::spawn(move || {
             // --- Background thread: all network I/O happens here ---
@@ -463,7 +492,8 @@ impl AppDelegate {
 
             let Some(token) = token else {
                 dispatch_main(move || {
-                    let app = unsafe { &*(self_ptr as *const AppDelegate) };
+                    // SAFETY: dispatch_main runs on the main thread; AppDelegate is process-lived.
+                    let app = unsafe { handle.get() };
                     let mut state = app.ivars().borrow_mut();
                     state.push_log(format!("{} [ERROR] No access token", timestamp()));
                     state.fetch_in_progress = false;
@@ -477,7 +507,8 @@ impl AppDelegate {
 
             // --- Dispatch back to main thread for UI updates ---
             dispatch_main(move || {
-                let app = unsafe { &*(self_ptr as *const AppDelegate) };
+                // SAFETY: dispatch_main runs on the main thread; AppDelegate is process-lived.
+                let app = unsafe { handle.get() };
 
                 // Update token cache if we refreshed
                 if let Some((new_token, expires_in)) = new_token_info {
