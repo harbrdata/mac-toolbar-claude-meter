@@ -89,6 +89,7 @@ dependencies = [
 name = "claude-o-meter"
 version = "1.6.0"
 dependencies = [
+ "block2",
  "chrono",
  "libc",
  "objc2",

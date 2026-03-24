@@ -1,10 +1,11 @@
+use block2::RcBlock;
+use objc2::Message;
 use objc2::rc::Retained;
-use objc2::{AnyThread, Message};
 use objc2_app_kit::{
     NSBezierPath, NSColor, NSFont, NSFontAttributeName, NSForegroundColorAttributeName, NSImage,
     NSStringDrawing,
 };
-use objc2_foundation::{NSDictionary, NSPoint, NSSize, NSString};
+use objc2_foundation::{NSDictionary, NSPoint, NSRect, NSSize, NSString};
 
 const GAUGE_START_DEG: f64 = 225.0;
 const GAUGE_SWEEP: f64 = 270.0;
@@ -70,21 +71,19 @@ fn draw_text_centered(text: &str, font: &NSFont, color: &NSColor, cx: f64, cy: f
     }
 }
 
-fn create_image_with_drawing(size: f64, draw: impl FnOnce(f64)) -> Retained<NSImage> {
+fn create_image_with_drawing(size: f64, draw: impl Fn(f64) + 'static) -> Retained<NSImage> {
     let ns_size = NSSize::new(size, size);
-    #[allow(deprecated)]
-    {
-        let img = NSImage::initWithSize(NSImage::alloc(), ns_size);
-        img.lockFocus();
+    let block = RcBlock::new(move |_rect: NSRect| -> objc2::runtime::Bool {
         draw(size);
-        img.unlockFocus();
-        img.setTemplate(false);
-        img
-    }
+        objc2::runtime::Bool::YES
+    });
+    let img = NSImage::imageWithSize_flipped_drawingHandler(ns_size, true, &block);
+    img.setTemplate(false);
+    img
 }
 
 pub fn create_gauge_icon(utilization: f64, size: f64) -> Retained<NSImage> {
-    create_image_with_drawing(size, |size| {
+    create_image_with_drawing(size, move |size| {
         let cx = size / 2.0;
         let cy = size / 2.0;
         let radius = size * 0.46;
