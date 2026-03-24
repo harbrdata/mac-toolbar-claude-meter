@@ -135,6 +135,17 @@ const USAGE_WINDOWS: &[(&str, &str)] = &[
 ];
 
 pub fn parse_usage(data: &serde_json::Value) -> Vec<UsageWindow> {
+    // Warn about unknown top-level keys that look like usage windows
+    if let Some(obj) = data.as_object() {
+        let known_keys: std::collections::HashSet<&str> =
+            USAGE_WINDOWS.iter().map(|(k, _)| *k).collect();
+        for key in obj.keys() {
+            if !known_keys.contains(key.as_str()) && obj[key].get("utilization").is_some() {
+                eprintln!("Unknown usage window in API response: {key}");
+            }
+        }
+    }
+
     USAGE_WINDOWS
         .iter()
         .filter_map(|(key, label)| {
