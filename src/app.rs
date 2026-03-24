@@ -112,20 +112,6 @@ pub struct AppState {
     alert_fired: bool,
 }
 
-impl Drop for AppState {
-    fn drop(&mut self) {
-        if let Some(ref timer) = self.poll_timer {
-            timer.invalidate();
-        }
-        if let Some(ref timer) = self.rate_limit_timer {
-            timer.invalidate();
-        }
-        if let Some(ref timer) = self.rate_limit_countdown_timer {
-            timer.invalidate();
-        }
-    }
-}
-
 impl AppState {
     fn push_log(&mut self, msg: String) {
         if self.log_buffer.len() >= LOG_CAPACITY {
@@ -161,6 +147,19 @@ define_class!(
 
         #[unsafe(method(applicationWillTerminate:))]
         fn will_terminate(&self, _notification: &NSNotification) {
+            // Invalidate all timers to prevent them firing during teardown.
+            // AppState is inside a mem::forget-ed delegate so Drop never runs.
+            let state = self.ivars().state.borrow();
+            if let Some(ref timer) = state.poll_timer {
+                timer.invalidate();
+            }
+            if let Some(ref timer) = state.rate_limit_timer {
+                timer.invalidate();
+            }
+            if let Some(ref timer) = state.rate_limit_countdown_timer {
+                timer.invalidate();
+            }
+            drop(state);
             launch_agent::cleanup_if_uninstalled();
         }
 
