@@ -112,6 +112,20 @@ pub struct AppState {
     alert_fired: bool,
 }
 
+impl Drop for AppState {
+    fn drop(&mut self) {
+        if let Some(ref timer) = self.poll_timer {
+            timer.invalidate();
+        }
+        if let Some(ref timer) = self.rate_limit_timer {
+            timer.invalidate();
+        }
+        if let Some(ref timer) = self.rate_limit_countdown_timer {
+            timer.invalidate();
+        }
+    }
+}
+
 impl AppState {
     fn push_log(&mut self, msg: String) {
         if self.log_buffer.len() >= LOG_CAPACITY {
