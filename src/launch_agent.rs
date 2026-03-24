@@ -78,7 +78,8 @@ pub fn rotate_log_if_needed() {
         return;
     }
     if let Ok(contents) = fs::read_to_string(&path) {
-        let half = contents.len() / 2;
+        // Ensure we don't slice in the middle of a multi-byte UTF-8 character
+        let half = contents.floor_char_boundary(contents.len() / 2);
         // Find the next newline after the midpoint to avoid splitting a line
         let start = contents[half..]
             .find('\n')
