@@ -62,12 +62,24 @@ fn refresh_access_token(refresh_token: &str) -> Option<TokenResult> {
         "refresh_token": refresh_token,
     });
 
-    let mut resp = ureq::post(TOKEN_URL)
+    let mut resp = match ureq::post(TOKEN_URL)
         .header("Content-Type", "application/json")
         .send_json(&body)
-        .ok()?;
+    {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("Token refresh request failed: {e}");
+            return None;
+        }
+    };
 
-    let json: serde_json::Value = resp.body_mut().read_json().ok()?;
+    let json: serde_json::Value = match resp.body_mut().read_json() {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("Token refresh JSON parse error: {e}");
+            return None;
+        }
+    };
     let token = json
         .get("access_token")
         .or_else(|| json.get("accessToken"))
