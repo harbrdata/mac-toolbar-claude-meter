@@ -100,13 +100,23 @@ cat > "$CONTENTS/Info.plist" << EOF
 </plist>
 EOF
 
-# 5. Stage DMG contents
+# 5. Codesign the .app bundle
+# A stable signature is required so macOS Keychain "Always Allow" persists across launches.
+# Set CODESIGN_IDENTITY to a Developer ID or certificate name for production signing.
+# Default: ad-hoc signing (-), which is stable for a given binary and sufficient for local use.
+CODESIGN_IDENTITY="${CODESIGN_IDENTITY:--}"
+echo "Codesigning with identity: $CODESIGN_IDENTITY"
+codesign --force --deep --sign "$CODESIGN_IDENTITY" "$APP_DIR"
+codesign --verify "$APP_DIR"
+echo "Codesign verified."
+
+# 6. Stage DMG contents
 echo "Staging DMG..."
 DMG_STAGE="$DIST_DIR/dmg"
 mkdir -p "$DMG_STAGE/.background"
 mv "$APP_DIR" "$DMG_STAGE/"
 
-# Install script — strips quarantine (bypasses Gatekeeper for unsigned app)
+# Install script — strips quarantine and re-signs after copy to preserve signature
 cat > "$DMG_STAGE/Install.command" << 'INSTALL_SCRIPT'
 #!/bin/bash
 set -e
@@ -130,10 +140,11 @@ echo "Copying to /Applications..."
 rm -rf "/Applications/$APP_NAME.app"
 cp -R "$DMG_APP" "/Applications/"
 
-# Strip quarantine so macOS doesn't block the unsigned app
-# Strip all quarantine/provenance attributes that block unsigned apps
+# Strip quarantine attributes and re-sign to ensure stable code signature
+# (quarantine stripping can invalidate the original signature)
 xattr -c "/Applications/$APP_NAME.app" 2>/dev/null || true
 find "/Applications/$APP_NAME.app" -exec xattr -c {} \; 2>/dev/null || true
+codesign --force --deep --sign - "/Applications/$APP_NAME.app" 2>/dev/null || true
 
 # Launch
 echo "Launching $APP_NAME..."
@@ -153,7 +164,7 @@ fi
 # Copy background image
 cp "$SCRIPT_DIR/dmg_background.png" "$DMG_STAGE/.background/background.png"
 
-# 6. Create a read-write DMG, style it, then convert to compressed
+# 7. Create a read-write DMG, style it, then convert to compressed
 echo "Creating styled DMG..."
 DMG_RW="$DIST_DIR/$APP_NAME-rw.dmg"
 DMG_PATH="$DIST_DIR/$APP_NAME.dmg"
