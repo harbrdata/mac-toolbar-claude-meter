@@ -165,21 +165,25 @@ fi
 cp "$SCRIPT_DIR/dmg_background.png" "$DMG_STAGE/.background/background.png"
 
 # 7. Create a read-write DMG, style it, then convert to compressed
+# Unset COPYFILE_DISABLE so hdiutil preserves dotfiles (.VolumeIcon.icns, .background, .DS_Store)
+unset COPYFILE_DISABLE
 echo "Creating styled DMG..."
 DMG_RW="$DIST_DIR/$APP_NAME-rw.dmg"
 DMG_PATH="$DIST_DIR/$APP_NAME.dmg"
 
-# Create read-write DMG
+# Create read-write DMG (HFS+ required for .VolumeIcon.icns and Finder styling)
 hdiutil create -volname "$APP_NAME" \
     -srcfolder "$DMG_STAGE" \
     -ov -format UDRW \
+    -fs HFS+ \
     "$DMG_RW"
 
 # Mount it
 MOUNT_DIR=$(hdiutil attach -readwrite -noverify "$DMG_RW" | grep "/Volumes/" | sed 's/.*\/Volumes/\/Volumes/')
 echo "Mounted at: $MOUNT_DIR"
 
-# Apply Finder window styling via AppleScript
+# Apply Finder window styling via AppleScript (must run BEFORE copying .VolumeIcon.icns,
+# as Finder's "update without registering applications" deletes it)
 osascript << APPLESCRIPT
 tell application "Finder"
     tell disk "$APP_NAME"
@@ -197,11 +201,21 @@ tell application "Finder"
         close
         open
         update without registering applications
-        delay 2
+        delay 3
         close
     end tell
 end tell
 APPLESCRIPT
+
+# Give Finder time to flush .DS_Store to disk
+sleep 2
+
+# Copy volume icon AFTER Finder styling (Finder's "update" command deletes it)
+if [ -f "$SCRIPT_DIR/AppIcon.icns" ]; then
+    cp "$SCRIPT_DIR/AppIcon.icns" "$MOUNT_DIR/.VolumeIcon.icns"
+    SetFile -a C "$MOUNT_DIR"
+    echo "Volume icon set."
+fi
 
 # Ensure Finder releases the volume
 sync
@@ -210,6 +224,13 @@ hdiutil detach "$MOUNT_DIR"
 # Convert to compressed read-only DMG
 hdiutil convert "$DMG_RW" -format UDZO -o "$DMG_PATH"
 rm -f "$DMG_RW"
+
+# Set custom icon on the DMG file itself (visible on desktop / in Finder)
+# Must unset COPYFILE_DISABLE so the resource fork is written correctly
+if command -v fileicon &>/dev/null && [ -f "$SCRIPT_DIR/AppIcon.icns" ]; then
+    unset COPYFILE_DISABLE
+    fileicon set "$DMG_PATH" "$SCRIPT_DIR/AppIcon.icns"
+fi
 
 echo ""
 echo "=== Done! ==="
