@@ -478,7 +478,7 @@ impl AppDelegate {
 
         let cached_token = state.cached_token.clone();
 
-        // Read credentials on main thread (keychain is local/fast) only if needed
+        // Read credentials from file only if token needs refresh
         let credentials = if token_expired {
             state.cached_token = None;
             state.cached_token_expires = None;

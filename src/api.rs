@@ -1,7 +1,8 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const USAGE_URL: &str = "https://api.anthropic.com/api/oauth/usage";
-const TOKEN_URL: &str = "https://api.anthropic.com/api/oauth/token";
+const TOKEN_URL: &str = "https://console.anthropic.com/v1/oauth/token";
+const CLIENT_ID: &str = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
 const USER_AGENT: &str = "claude-o-meter/1.0";
 const ANTHROPIC_BETA: &str = "oauth-2025-04-20";
 
@@ -60,6 +61,7 @@ fn refresh_access_token(refresh_token: &str) -> Option<TokenResult> {
     let body = serde_json::json!({
         "grant_type": "refresh_token",
         "refresh_token": refresh_token,
+        "client_id": CLIENT_ID,
     });
 
     let mut resp = match ureq::post(TOKEN_URL)
