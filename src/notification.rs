@@ -56,9 +56,29 @@ pub fn post(title: &str, subtitle: &str, body: &str) {
 }
 
 fn notification_center() -> Option<Retained<AnyObject>> {
+    // UNUserNotificationCenter requires a real .app bundle (with Info.plist /
+    // bundleIdentifier). When running the bare binary it throws
+    // NSInternalInconsistencyException "bundleProxyForCurrentProcess is nil".
+    if !running_in_app_bundle() {
+        return None;
+    }
     let cls = AnyClass::get(c"UNUserNotificationCenter")?;
     let center: Option<Retained<AnyObject>> = unsafe { msg_send![cls, currentNotificationCenter] };
     center
+}
+
+fn running_in_app_bundle() -> bool {
+    unsafe {
+        let Some(cls) = AnyClass::get(c"NSBundle") else {
+            return false;
+        };
+        let bundle: Option<Retained<AnyObject>> = msg_send![cls, mainBundle];
+        let Some(bundle) = bundle else {
+            return false;
+        };
+        let ident: Option<Retained<NSString>> = msg_send![&bundle, bundleIdentifier];
+        ident.is_some()
+    }
 }
 
 fn post_osascript(title: &str, subtitle: &str, body: &str) {
