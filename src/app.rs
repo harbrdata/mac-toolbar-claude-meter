@@ -107,6 +107,7 @@ pub struct AppState {
     rate_limit_countdown_timer: Option<Retained<NSTimer>>,
     cached_token: Option<String>,
     cached_token_expires: Option<std::time::Instant>,
+    cached_creds_fingerprint: Option<String>,
     log_buffer: Vec<String>,
     log_write_count: u32,
     alert_threshold: f64,
@@ -300,6 +301,7 @@ impl AppDelegate {
                 rate_limit_countdown_timer: None,
                 cached_token: None,
                 cached_token_expires: None,
+                cached_creds_fingerprint: None,
                 log_buffer: Vec::new(),
                 log_write_count: 0,
                 alert_threshold: saved_threshold,
@@ -470,22 +472,35 @@ impl AppDelegate {
         let mut state = self.ivars().state.borrow_mut();
         state.push_log(format!("{} Fetching usage data...", timestamp()));
 
-        // Check if cached token has expired
-        let token_expired = match state.cached_token_expires {
-            Some(expires) => std::time::Instant::now() >= expires,
-            None => state.cached_token.is_none(),
-        };
+        // Always read keychain so we detect account switches / re-logins
+        // before the in-memory token's derived expiry elapses.
+        let credentials = keychain::read_credentials();
+
+        let fingerprint = credentials.as_ref().map(creds_fingerprint);
+        let keychain_changed = fingerprint.is_some()
+            && state.cached_creds_fingerprint.as_ref() != fingerprint.as_ref();
+        if keychain_changed {
+            state.push_log(format!(
+                "{} Keychain credentials changed, invalidating token cache",
+                timestamp()
+            ));
+            state.cached_token = None;
+            state.cached_token_expires = None;
+            state.cached_creds_fingerprint = fingerprint.clone();
+        }
+
+        let token_expired = keychain_changed
+            || match state.cached_token_expires {
+                Some(expires) => std::time::Instant::now() >= expires,
+                None => state.cached_token.is_none(),
+            };
 
         let cached_token = state.cached_token.clone();
 
-        // Read credentials from file only if token needs refresh
-        let credentials = if token_expired {
+        if token_expired {
             state.cached_token = None;
             state.cached_token_expires = None;
-            keychain::read_credentials()
-        } else {
-            None
-        };
+        }
 
         drop(state);
 
@@ -1051,6 +1066,20 @@ fn load_preferences() -> (f64, f64, bool) {
 
 fn timestamp() -> String {
     chrono::Local::now().format("%H:%M:%S").to_string()
+}
+
+/// Identity fingerprint for a keychain credential entry. Changes whenever
+/// the user logs in again (refreshToken rotates per login) or switches accounts.
+fn creds_fingerprint(creds: &serde_json::Value) -> String {
+    let refresh = creds
+        .get("refreshToken")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let expires = creds
+        .get("expiresAt")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    format!("{refresh}|{expires}")
 }
 
 pub fn run() {
