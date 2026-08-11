@@ -22,7 +22,12 @@ pub fn request_authorization() {
 }
 
 /// Post a native macOS notification via UNUserNotificationCenter.
-pub fn post(title: &str, subtitle: &str, body: &str) {
+///
+/// `id` distinguishes independent notification streams. `UNUserNotificationCenter`
+/// replaces any pending or delivered request sharing an identifier, so two alerts posted
+/// in the same pass (e.g. the 5h and 7d windows both crossing on one fetch) must pass
+/// different `id`s or only the last one is shown.
+pub fn post(id: &str, title: &str, subtitle: &str, body: &str) {
     let Some(center) = notification_center() else {
         eprintln!("UNUserNotificationCenter not available, falling back to osascript");
         post_osascript(title, subtitle, body);
@@ -40,7 +45,7 @@ pub fn post(title: &str, subtitle: &str, body: &str) {
 
     unsafe {
         let cls = AnyClass::get(c"UNNotificationRequest").unwrap();
-        let identifier = NSString::from_str("claude-meter-alert");
+        let identifier = NSString::from_str(&format!("claude-meter-alert-{id}"));
         let request: Retained<AnyObject> = msg_send![
             cls,
             requestWithIdentifier: &*identifier,

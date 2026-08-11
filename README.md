@@ -2,7 +2,7 @@
 
 A lightweight macOS menu bar app that shows your Claude Code plan usage at a glance.
 
-Displays a color-coded ring gauge in the menu bar showing your current 5-hour usage window. Click it for a full breakdown of all usage windows with progress bars and reset countdowns.
+Displays a color-coded ring gauge in the menu bar showing your current 5-hour usage window, with your 7-day usage as a muted arc behind it. Click it for a full breakdown of all usage windows with progress bars and reset countdowns.
 
 **macOS only** — requires macOS 13 (Ventura) or later.
 
@@ -58,10 +58,12 @@ This creates `dist/Claude-o-Meter.dmg` — a universal binary (Intel + Apple Sil
 ## Features
 
 - Ring gauge icon with percentage in the menu bar (green/yellow/orange/red)
+- 7d usage shown in the same ring as a muted arc behind the 5h fill, so a high weekly total is visible even when the current window is nearly empty
+- Optional **Show Both Windows** mode — two gauges side by side, 5h and 7d
 - Dropdown with all usage windows: 5h, 7d, Opus, Sonnet, Cowork, OAuth
 - Progress bars and reset time countdowns
 - Configurable refresh interval (1m / 2m / 5m / 10m)
-- Usage alert notification with configurable threshold (75% / 80% / 85% / 90% / 95% / Off)
+- Separate usage alert notifications for the 5h and 7d windows, each with its own threshold (75% / 80% / 85% / 90% / 95% / Off; defaults 95% and 80%)
 - Toggle polling on/off from the menu
 - Start at Login toggle (installs/removes a Launch Agent)
 - Clean uninstall — drag to Trash and the app removes its Launch Agent automatically
