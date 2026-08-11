@@ -4,7 +4,12 @@
 /// the per-app Keychain Access authorization prompt.
 pub fn read_credentials() -> Option<serde_json::Value> {
     let output = std::process::Command::new("security")
-        .args(["find-generic-password", "-s", "Claude Code-credentials", "-w"])
+        .args([
+            "find-generic-password",
+            "-s",
+            "Claude Code-credentials",
+            "-w",
+        ])
         .output()
         .ok()?;
 
