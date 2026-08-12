@@ -19,6 +19,10 @@ jobs:
               @semantic-release/changelog \
               -D
       - run:
+          name: Configure git for HTTPS push
+          command: |
+            git remote set-url origin "https://${GH_TOKEN}@github.com/harbrdata/mac-toolbar-claude-meter.git"
+      - run:
           name: Run semantic-release
           command: npx semantic-release
       - run:
