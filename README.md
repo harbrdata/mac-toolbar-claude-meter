@@ -88,6 +88,12 @@ The app uses the access token to call the Anthropic usage API (`https://api.anth
 - **Greyed-out "||" icon:** Rate-limited (auto-resumes) or polling is turned off. Open the dropdown to check.
 - **"!" error icon:** Run `claude login` to refresh your credentials.
 
+## Contributing
+
+Commit messages follow [Conventional Commits](https://www.conventionalcommits.org/) — `type(scope): description`, e.g. `fix(auth): refresh expired token`. Use `feat`, `fix`, `chore`, `refactor`, `test`, or `docs`.
+
+The version in `VERSION` follows [semantic versioning](https://semver.org/): `feat` commits bump the minor version, `fix` commits the patch version, and a breaking change bumps the major version.
+
 ## License
 
 Copyright (c) 2025-2026 Harbr Data. All rights reserved.
