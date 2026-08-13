@@ -10,7 +10,13 @@ jobs:
     macos:
       xcode: "16.4.0"
     steps:
-      - checkout
+      # CircleCI's default blobless checkout leaves file contents behind on the
+      # remote, so `git checkout` lazily re-authenticates to GitHub over SSH to
+      # fetch them — a second auth round-trip that has failed mid-checkout with
+      # "Permission denied (publickey)". A full clone pulls everything under the
+      # single authenticated clone.
+      - checkout:
+          method: full
       - node/install:
           node-version: "22.14.0"
       - run:
