@@ -87,7 +87,7 @@ dependencies = [
 
 [[package]]
 name = "claude-o-meter"
-version = "1.10.0"
+version = "1.10.1"
 dependencies = [
  "block2",
  "chrono",
