@@ -221,14 +221,15 @@ tell application "Finder"
         set arrangement of theViewOptions to not arranged
         set icon size of theViewOptions to 80
         set background picture of theViewOptions to file ".background:background.png"
-        set position of item "$APP_NAME.app" of container window to {140, 200}
-        set position of item "Install.command" of container window to {340, 200}
+        set position of item "$APP_NAME.app" of container window to {120, 200}
+        set position of item "Install.command" of container window to {320, 200}
         # These two items only matter to macOS, not to anyone browsing the DMG,
         # so they sit well below the 480x400 content area to stay off-screen
-        # even with hidden files shown. Their x stays under ~350 so the
-        # 128pt-wide icon cell doesn't also push the view sideways.
+        # even with hidden files shown. Their x stays low (10 and 150) so the
+        # 128pt-wide icon cell doesn't push the view sideways and contribute
+        # to the horizontal scrollbar.
         set position of item ".background" of container window to {10, 700}
-        set position of item ".VolumeIcon.icns" of container window to {345, 700}
+        set position of item ".VolumeIcon.icns" of container window to {150, 700}
         close
         open
         update without registering applications
