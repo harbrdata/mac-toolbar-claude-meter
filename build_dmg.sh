@@ -16,6 +16,25 @@ if [ "$1" = "--restyle" ]; then
     RESTYLE=1
 fi
 
+# Echo the single mountpoint of an attached image. `set -e` cannot catch a failed
+# attach on its own — the mountpoint is extracted through a pipeline whose last
+# command always succeeds — so an empty or multi-line result would otherwise flow
+# on and surface as a misleading styling error.
+attach_dmg() {
+    local out mount
+    out=$(hdiutil attach "$@") || {
+        echo "ERROR: hdiutil attach failed:" >&2
+        echo "$out" >&2
+        return 1
+    }
+    mount=$(printf '%s\n' "$out" | sed -n 's|.*\(/Volumes/.*\)$|\1|p')
+    if [ -z "$mount" ] || [ "$(printf '%s\n' "$mount" | wc -l)" -ne 1 ]; then
+        echo "ERROR: expected exactly one /Volumes mountpoint from hdiutil attach, got: ${mount:-<none>}" >&2
+        return 1
+    fi
+    printf '%s\n' "$mount"
+}
+
 # Determine version: use BUILD_VERSION env var, or read from VERSION file
 if [ -n "$BUILD_VERSION" ]; then
     VERSION="$BUILD_VERSION"
@@ -186,7 +205,7 @@ hdiutil create -volname "$APP_NAME" \
     "$DMG_RW"
 
 # Mount it
-MOUNT_DIR=$(hdiutil attach -readwrite -noverify "$DMG_RW" | grep "/Volumes/" | sed 's/.*\/Volumes/\/Volumes/')
+MOUNT_DIR=$(attach_dmg -readwrite -noverify "$DMG_RW")
 echo "Mounted at: $MOUNT_DIR"
 
 # A leftover volume of the same name makes macOS mount this one as
@@ -312,7 +331,7 @@ rm -f "$DMG_RW"
 # Verify the styling actually made it into the shipped DMG rather than trusting
 # the earlier steps silently — this is what catches a regression to an unstyled release.
 echo "Verifying DMG styling..."
-VERIFY_MOUNT=$(hdiutil attach -readonly -noverify -nobrowse "$DMG_PATH" | grep "/Volumes/" | sed 's/.*\/Volumes/\/Volumes/')
+VERIFY_MOUNT=$(attach_dmg -readonly -noverify -nobrowse "$DMG_PATH")
 VERIFY_FAILED=0
 
 if [ ! -f "$VERIFY_MOUNT/.DS_Store" ]; then
