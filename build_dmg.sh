@@ -189,6 +189,18 @@ hdiutil create -volname "$APP_NAME" \
 MOUNT_DIR=$(hdiutil attach -readwrite -noverify "$DMG_RW" | grep "/Volumes/" | sed 's/.*\/Volumes/\/Volumes/')
 echo "Mounted at: $MOUNT_DIR"
 
+# A leftover volume of the same name makes macOS mount this one as
+# "$APP_NAME 1", which breaks styling both ways: the restyle AppleScript
+# addresses `disk "$APP_NAME"` and would style the stale volume, and the baked
+# .DS_Store records its background relative to the volume name, so the image
+# would ship with no background picture.
+if [ "$MOUNT_DIR" != "/Volumes/$APP_NAME" ]; then
+    echo "ERROR: mounted at $MOUNT_DIR, expected /Volumes/$APP_NAME."
+    echo "       Detach the stale volume first: hdiutil detach '/Volumes/$APP_NAME'"
+    hdiutil detach "$MOUNT_DIR" || hdiutil detach -force "$MOUNT_DIR"
+    exit 1
+fi
+
 DS_STORE="$SCRIPT_DIR/dmg_ds_store"
 
 if [ "$RESTYLE" = "1" ]; then
@@ -247,6 +259,14 @@ APPLESCRIPT
     # Give Finder time to flush .DS_Store to disk
     sleep 2
 
+    # Finder can write a layout with the window bounds and icon positions but no
+    # background reference, which looks like a success but bakes a blank DMG.
+    if ! LC_ALL=C grep -q "backgroundImageAlias" "$MOUNT_DIR/.DS_Store"; then
+        echo "ERROR: Finder recorded no background image — refusing to bake a blank layout."
+        hdiutil detach "$MOUNT_DIR" || hdiutil detach -force "$MOUNT_DIR"
+        exit 1
+    fi
+
     # Save the freshly-styled layout so it can be committed and baked into future builds.
     cp "$MOUNT_DIR/.DS_Store" "$DS_STORE"
     echo "Saved styled .DS_Store to $DS_STORE"
@@ -299,6 +319,10 @@ elif ! LC_ALL=C grep -q "bwsp" "$VERIFY_MOUNT/.DS_Store" \
     || ! LC_ALL=C grep -q "icvp" "$VERIFY_MOUNT/.DS_Store" \
     || ! LC_ALL=C grep -q "Iloc" "$VERIFY_MOUNT/.DS_Store"; then
     echo "ERROR: .DS_Store is missing window bounds (bwsp), icon view options (icvp), or icon positions (Iloc)."
+    VERIFY_FAILED=1
+elif ! LC_ALL=C grep -q "backgroundImageAlias" "$VERIFY_MOUNT/.DS_Store"; then
+    # Present but unreferenced background art still opens as a blank window.
+    echo "ERROR: .DS_Store has no background image reference (backgroundImageAlias)."
     VERIFY_FAILED=1
 fi
 
