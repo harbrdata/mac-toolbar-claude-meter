@@ -183,8 +183,10 @@ MOUNT_DIR=$(hdiutil attach -readwrite -noverify "$DMG_RW" | grep "/Volumes/" | s
 echo "Mounted at: $MOUNT_DIR"
 
 # Apply Finder window styling via AppleScript (must run BEFORE copying .VolumeIcon.icns,
-# as Finder's "update without registering applications" deletes it)
-osascript << APPLESCRIPT
+# as Finder's "update without registering applications" deletes it).
+# Styling is cosmetic and needs a GUI session, which CI runners do not guarantee —
+# fall back to an unstyled DMG rather than failing the release.
+if ! osascript << APPLESCRIPT
 tell application "Finder"
     tell disk "$APP_NAME"
         open
@@ -206,6 +208,9 @@ tell application "Finder"
     end tell
 end tell
 APPLESCRIPT
+then
+    echo "WARNING: Finder styling failed (no GUI session?) — producing an unstyled DMG."
+fi
 
 # Give Finder time to flush .DS_Store to disk
 sleep 2
@@ -219,7 +224,7 @@ fi
 
 # Ensure Finder releases the volume
 sync
-hdiutil detach "$MOUNT_DIR"
+hdiutil detach "$MOUNT_DIR" || hdiutil detach -force "$MOUNT_DIR"
 
 # Convert to compressed read-only DMG
 hdiutil convert "$DMG_RW" -format UDZO -o "$DMG_PATH"

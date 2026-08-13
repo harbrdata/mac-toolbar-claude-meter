@@ -5,11 +5,14 @@ orbs:
 
 jobs:
   semantic-release:
-    executor:
-      name: node/default
-      tag: "22.14.0"
+    # The release builds a signed universal .app and a styled DMG, which needs
+    # cargo's Apple targets, lipo, codesign and hdiutil — so it must run on macOS.
+    macos:
+      xcode: "16.4.0"
     steps:
       - checkout
+      - node/install:
+          node-version: "22.14.0"
       - run:
           name: Install semantic-release plugins
           command: |
@@ -19,21 +22,50 @@ jobs:
               @semantic-release/changelog \
               -D
       - run:
+          name: Halt unless a release is due
+          # CircleCI fixes the workflow DAG at pipeline-creation time, so a job cannot be
+          # skipped on a runtime condition — the best available is to exit early, before
+          # the expensive Rust toolchain install and universal build.
+          # --dry-run only analyses commits: it never runs prepareCmd, tags or publishes.
+          command: |
+            set -o pipefail
+            npx semantic-release --dry-run 2>&1 | tee /tmp/dry-run.log
+            if ! grep -q "The next release version is" /tmp/dry-run.log; then
+              echo "No releasable commits — skipping the DMG build."
+              circleci-agent step halt
+            fi
+      - restore_cache:
+          keys:
+            - cargo-v1-{{ checksum "Cargo.lock" }}
+            - cargo-v1-
+      - run:
+          name: Install Rust toolchain and Apple targets
+          command: |
+            if ! command -v rustup > /dev/null 2>&1; then
+              curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+                | sh -s -- -y --default-toolchain stable --profile minimal
+            fi
+            echo 'source "$HOME/.cargo/env"' >> "$BASH_ENV"
+            source "$HOME/.cargo/env"
+            rustup target add aarch64-apple-darwin x86_64-apple-darwin
+      - run:
           name: Configure git for HTTPS push
           command: |
             git remote set-url origin "https://${GH_TOKEN}@github.com/harbrdata/mac-toolbar-claude-meter.git"
       - run:
           name: Run semantic-release
+          # Stamps the version, builds dist/Claude-o-Meter.dmg (via
+          # ci/prepare_release.sh) and attaches it to the GitHub release.
           command: npx semantic-release
-      - run:
-          name: Reminder
-          command: |
-            echo ""
-            echo "============================================"
-            echo "  To build the DMG, run locally:"
-            echo "    ./build_dmg.sh"
-            echo "============================================"
-            echo ""
+          # Two cold cross-compiled release builds plus hdiutil/Finder styling can sit
+          # quiet for a while; the 10m default is too tight.
+          no_output_timeout: 30m
+      - save_cache:
+          key: cargo-v1-{{ checksum "Cargo.lock" }}
+          paths:
+            - ~/.cargo/registry
+            - ~/.cargo/git
+            - target
 
 workflows:
   release:
