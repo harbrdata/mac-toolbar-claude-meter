@@ -1132,6 +1132,12 @@ impl AppDelegate {
             menu.addItem(&logs_item);
 
             menu.addItem(&NSMenuItem::separatorItem(mtm));
+            menu.addItem(&styled_item(
+                &format!("Version {}", env!("CARGO_PKG_VERSION")),
+                &mono_small,
+                Some(&NSColor::secondaryLabelColor()),
+                mtm,
+            ));
             menu.addItem(&action_item("Quit", sel!(quit:), &this, mtm));
 
             // Logo banner — inserted at position 0 after all items are added
