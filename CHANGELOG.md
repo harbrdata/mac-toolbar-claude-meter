@@ -1,3 +1,16 @@
+# [1.10.0](https://github.com/harbrdata/mac-toolbar-claude-meter/compare/1.9.0...1.10.0) (2026-08-13)
+
+
+### Bug Fixes
+
+* **ci:** attach the DMG to GitHub releases ([0a4e58d](https://github.com/harbrdata/mac-toolbar-claude-meter/commit/0a4e58dd87cfe5700f8f0bd697b2ae6337d938f5))
+* **ci:** use a full clone for checkout ([7544316](https://github.com/harbrdata/mac-toolbar-claude-meter/commit/7544316120a6569055ccd17942a036fb7d868e07))
+
+
+### Features
+
+* show app version in the menu ([275be2b](https://github.com/harbrdata/mac-toolbar-claude-meter/commit/275be2bdfe72d2caab5693d5927a3eeee17504f0))
+
 # [1.9.0](https://github.com/harbrdata/mac-toolbar-claude-meter/compare/1.8.0...1.9.0) (2026-08-12)
 
 
