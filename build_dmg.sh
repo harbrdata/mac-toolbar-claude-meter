@@ -9,6 +9,13 @@ APP_NAME="Claude-o-Meter"
 DIST_DIR="$SCRIPT_DIR/dist"
 BUNDLE_ID="com.local.claude-o-meter"
 
+# --restyle regenerates dmg_ds_store from a live Finder session on a GUI Mac.
+# Default (no flag) is the CI path: bake the committed .DS_Store, no Finder involved.
+RESTYLE=0
+if [ "$1" = "--restyle" ]; then
+    RESTYLE=1
+fi
+
 # Determine version: use BUILD_VERSION env var, or read from VERSION file
 if [ -n "$BUILD_VERSION" ]; then
     VERSION="$BUILD_VERSION"
@@ -182,11 +189,27 @@ hdiutil create -volname "$APP_NAME" \
 MOUNT_DIR=$(hdiutil attach -readwrite -noverify "$DMG_RW" | grep "/Volumes/" | sed 's/.*\/Volumes/\/Volumes/')
 echo "Mounted at: $MOUNT_DIR"
 
-# Apply Finder window styling via AppleScript (must run BEFORE copying .VolumeIcon.icns,
-# as Finder's "update without registering applications" deletes it).
-# Styling is cosmetic and needs a GUI session, which CI runners do not guarantee —
-# fall back to an unstyled DMG rather than failing the release.
-if ! osascript << APPLESCRIPT
+DS_STORE="$SCRIPT_DIR/dmg_ds_store"
+
+if [ "$RESTYLE" = "1" ]; then
+    # Positioning .background and .VolumeIcon.icns needs Finder to list them, so this
+    # mode requires `defaults write com.apple.finder AppleShowAllFiles true`.
+    # Finder can only record a position for an item that exists at styling time.
+    # The real .VolumeIcon.icns is copied in AFTER styling (see below), because
+    # Finder's "update without registering applications" deletes it — so a copy
+    # is placed here too, just so Finder has something named .VolumeIcon.icns to
+    # position. The .DS_Store position record is keyed on the filename, so it
+    # still applies once the post-styling copy recreates the file.
+    if [ -f "$SCRIPT_DIR/AppIcon.icns" ]; then
+        cp "$SCRIPT_DIR/AppIcon.icns" "$MOUNT_DIR/.VolumeIcon.icns"
+    fi
+
+    # Apply Finder window styling via AppleScript (must run BEFORE the real copy of
+    # .VolumeIcon.icns further down, as Finder's "update without registering
+    # applications" deletes it).
+    # This mode needs a GUI session on a real Mac; there is no fallback — a failed
+    # restyle must not silently produce a DMG with a stale or missing layout.
+    if ! osascript << APPLESCRIPT
 tell application "Finder"
     tell disk "$APP_NAME"
         open
@@ -200,6 +223,8 @@ tell application "Finder"
         set background picture of theViewOptions to file ".background:background.png"
         set position of item "$APP_NAME.app" of container window to {140, 200}
         set position of item "Install.command" of container window to {340, 200}
+        set position of item ".background" of container window to {50, 340}
+        set position of item ".VolumeIcon.icns" of container window to {430, 340}
         close
         open
         update without registering applications
@@ -208,12 +233,34 @@ tell application "Finder"
     end tell
 end tell
 APPLESCRIPT
-then
-    echo "WARNING: Finder styling failed (no GUI session?) — producing an unstyled DMG."
-fi
+    then
+        echo "ERROR: Finder styling failed — no GUI session, or Finder refused the layout."
+        hdiutil detach "$MOUNT_DIR" || hdiutil detach -force "$MOUNT_DIR"
+        exit 1
+    fi
 
-# Give Finder time to flush .DS_Store to disk
-sleep 2
+    # Give Finder time to flush .DS_Store to disk
+    sleep 2
+
+    # Save the freshly-styled layout so it can be committed and baked into future builds.
+    cp "$MOUNT_DIR/.DS_Store" "$DS_STORE"
+    echo "Saved styled .DS_Store to $DS_STORE"
+else
+    # CI path: no Finder involved. A live Finder session isn't available on the
+    # CircleCI macOS runner, so styling is baked ahead of time instead of generated
+    # at build time — see --restyle above to regenerate this file.
+    if [ ! -f "$DS_STORE" ]; then
+        echo "ERROR: $DS_STORE not found. Run '$0 --restyle' on a GUI Mac to generate it,"
+        echo "       or this build would ship an unstyled DMG."
+        hdiutil detach "$MOUNT_DIR" || hdiutil detach -force "$MOUNT_DIR"
+        exit 1
+    fi
+    # The baked .DS_Store only resolves its background image when the volume name
+    # matches the one it was recorded on ("$APP_NAME"), since Finder stores the
+    # background reference relative to that volume.
+    cp "$DS_STORE" "$MOUNT_DIR/.DS_Store"
+    echo "Applied baked .DS_Store."
+fi
 
 # Copy volume icon AFTER Finder styling (Finder's "update" command deletes it)
 if [ -f "$SCRIPT_DIR/AppIcon.icns" ]; then
@@ -222,6 +269,10 @@ if [ -f "$SCRIPT_DIR/AppIcon.icns" ]; then
     echo "Volume icon set."
 fi
 
+# Remove volume noise macOS creates on a mounted read-write image; it has no place
+# in the shipped DMG and .fseventsd in particular can bloat the compressed image.
+rm -rf "$MOUNT_DIR/.fseventsd" "$MOUNT_DIR/.Trashes"
+
 # Ensure Finder releases the volume
 sync
 hdiutil detach "$MOUNT_DIR" || hdiutil detach -force "$MOUNT_DIR"
@@ -229,6 +280,40 @@ hdiutil detach "$MOUNT_DIR" || hdiutil detach -force "$MOUNT_DIR"
 # Convert to compressed read-only DMG
 hdiutil convert "$DMG_RW" -format UDZO -o "$DMG_PATH"
 rm -f "$DMG_RW"
+
+# Verify the styling actually made it into the shipped DMG rather than trusting
+# the earlier steps silently — this is what catches a regression to an unstyled release.
+echo "Verifying DMG styling..."
+VERIFY_MOUNT=$(hdiutil attach -readonly -noverify -nobrowse "$DMG_PATH" | grep "/Volumes/" | sed 's/.*\/Volumes/\/Volumes/')
+VERIFY_FAILED=0
+
+if [ ! -f "$VERIFY_MOUNT/.DS_Store" ]; then
+    echo "ERROR: .DS_Store missing from shipped DMG."
+    VERIFY_FAILED=1
+elif ! LC_ALL=C grep -q "bwsp" "$VERIFY_MOUNT/.DS_Store" \
+    || ! LC_ALL=C grep -q "icvp" "$VERIFY_MOUNT/.DS_Store" \
+    || ! LC_ALL=C grep -q "Iloc" "$VERIFY_MOUNT/.DS_Store"; then
+    echo "ERROR: .DS_Store is missing window bounds (bwsp), icon view options (icvp), or icon positions (Iloc)."
+    VERIFY_FAILED=1
+fi
+
+if [ ! -f "$VERIFY_MOUNT/.background/background.png" ]; then
+    echo "ERROR: .background/background.png missing from shipped DMG."
+    VERIFY_FAILED=1
+fi
+
+if [ -e "$VERIFY_MOUNT/.fseventsd" ]; then
+    echo "ERROR: .fseventsd present in shipped DMG (should have been stripped before detach)."
+    VERIFY_FAILED=1
+fi
+
+hdiutil detach "$VERIFY_MOUNT" || hdiutil detach -force "$VERIFY_MOUNT"
+
+if [ "$VERIFY_FAILED" = "1" ]; then
+    echo "ERROR: DMG styling verification failed — see above."
+    exit 1
+fi
+echo "DMG styling verified."
 
 # Set custom icon on the DMG file itself (visible on desktop / in Finder)
 # Must unset COPYFILE_DISABLE so the resource fork is written correctly
