@@ -223,8 +223,8 @@ tell application "Finder"
         set background picture of theViewOptions to file ".background:background.png"
         set position of item "$APP_NAME.app" of container window to {140, 200}
         set position of item "Install.command" of container window to {340, 200}
-        set position of item ".background" of container window to {50, 340}
-        set position of item ".VolumeIcon.icns" of container window to {430, 340}
+        set position of item ".background" of container window to {55, 300}
+        set position of item ".VolumeIcon.icns" of container window to {415, 300}
         close
         open
         update without registering applications
