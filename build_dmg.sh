@@ -223,12 +223,12 @@ tell application "Finder"
         set background picture of theViewOptions to file ".background:background.png"
         set position of item "$APP_NAME.app" of container window to {140, 200}
         set position of item "Install.command" of container window to {340, 200}
-        # Finder's item position is the icon cell's top-left, and a cell is
-        # roughly 128x100 points once the label is counted, so within this
-        # 480x400 content area an item's x must stay under ~350 and its y
-        # under ~300 or Finder shows scrollbars and clips the icon.
-        set position of item ".background" of container window to {10, 285}
-        set position of item ".VolumeIcon.icns" of container window to {345, 285}
+        # These two items only matter to macOS, not to anyone browsing the DMG,
+        # so they sit well below the 480x400 content area to stay off-screen
+        # even with hidden files shown. Their x stays under ~350 so the
+        # 128pt-wide icon cell doesn't also push the view sideways.
+        set position of item ".background" of container window to {10, 700}
+        set position of item ".VolumeIcon.icns" of container window to {345, 700}
         close
         open
         update without registering applications
