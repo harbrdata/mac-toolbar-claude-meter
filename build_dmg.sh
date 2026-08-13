@@ -233,8 +233,11 @@ tell application "Finder"
         set arrangement of theViewOptions to not arranged
         set icon size of theViewOptions to 80
         set background picture of theViewOptions to file ".background:background.png"
-        set position of item "$APP_NAME.app" of container window to {120, 200}
-        set position of item "Install.command" of container window to {320, 200}
+        # Finder anchors an item by its cell's top-left, and the cell is wider than
+        # the icon, so these sit ~85pt left of where the icons appear: the pair
+        # centres on 160 and 320, thirds of the 480pt-wide window.
+        set position of item "$APP_NAME.app" of container window to {76, 200}
+        set position of item "Install.command" of container window to {236, 200}
         # These two items only matter to macOS, not to anyone browsing the DMG,
         # so they sit well below the 480x400 content area to stay off-screen
         # even with hidden files shown. Their x stays low (10 and 150) so the
