@@ -202,6 +202,7 @@ fn parse_credits_extra_usage(data: &serde_json::Value) -> Option<Credits> {
     let e = data.get("extra_usage")?;
     let used_minor = e.get("used_credits")?.as_f64()? as i64;
     let limit_minor = e.get("monthly_limit")?.as_i64()?;
+    let (currency, exponent) = currency_and_exponent(e, "currency", "decimal_places");
     Some(Credits {
         enabled: e
             .get("is_enabled")
@@ -214,15 +215,8 @@ fn parse_credits_extra_usage(data: &serde_json::Value) -> Option<Credits> {
             .unwrap_or_else(|| ratio(used_minor, limit_minor)),
         used_minor,
         limit_minor,
-        currency: e
-            .get("currency")
-            .and_then(|v| v.as_str())
-            .unwrap_or("USD")
-            .to_string(),
-        exponent: e
-            .get("decimal_places")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(2) as u32,
+        currency,
+        exponent,
     })
 }
 
@@ -232,18 +226,31 @@ fn parse_credits_spend(data: &serde_json::Value) -> Option<Credits> {
     let limit = s.get("limit")?;
     let used_minor = used.get("amount_minor")?.as_i64()?;
     let limit_minor = limit.get("amount_minor")?.as_i64()?;
+    let (currency, exponent) = currency_and_exponent(used, "currency", "exponent");
     Some(Credits {
         enabled: s.get("enabled").and_then(|v| v.as_bool()).unwrap_or(false),
         utilization: ratio(used_minor, limit_minor),
         used_minor,
         limit_minor,
-        currency: used
-            .get("currency")
-            .and_then(|v| v.as_str())
-            .unwrap_or("USD")
-            .to_string(),
-        exponent: used.get("exponent").and_then(|v| v.as_u64()).unwrap_or(2) as u32,
+        currency,
+        exponent,
     })
+}
+
+/// Currency code and decimal exponent for a credits payload, defaulting to USD/2 when
+/// the API omits them. The two payload shapes name these fields differently.
+fn currency_and_exponent(
+    v: &serde_json::Value,
+    currency_key: &str,
+    exponent_key: &str,
+) -> (String, u32) {
+    let currency = v
+        .get(currency_key)
+        .and_then(|c| c.as_str())
+        .unwrap_or("USD")
+        .to_string();
+    let exponent = v.get(exponent_key).and_then(|e| e.as_u64()).unwrap_or(2) as u32;
+    (currency, exponent)
 }
 
 fn ratio(used: i64, limit: i64) -> f64 {
@@ -256,26 +263,15 @@ fn ratio(used: i64, limit: i64) -> f64 {
 
 /// Format a minor-unit amount with its currency symbol, e.g. `10117` GBP -> `£101.17`.
 pub fn format_money(minor: i64, currency: &str, exponent: u32) -> String {
-    let symbol = match currency {
-        "GBP" => "£",
-        "USD" => "$",
-        "EUR" => "€",
-        "JPY" => "¥",
-        other => {
-            return format!(
-                "{} {:.*}",
-                other,
-                exponent as usize,
-                scaled(minor, exponent)
-            );
-        }
+    // Unknown currencies prefix the ISO code instead of a symbol, e.g. `SEK 12.34`.
+    let prefix = match currency {
+        "GBP" => "£".to_string(),
+        "USD" => "$".to_string(),
+        "EUR" => "€".to_string(),
+        "JPY" => "¥".to_string(),
+        other => format!("{other} "),
     };
-    format!(
-        "{}{:.*}",
-        symbol,
-        exponent as usize,
-        scaled(minor, exponent)
-    )
+    format!("{prefix}{:.*}", exponent as usize, scaled(minor, exponent))
 }
 
 fn scaled(minor: i64, exponent: u32) -> f64 {

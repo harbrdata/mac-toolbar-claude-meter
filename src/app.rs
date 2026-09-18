@@ -258,15 +258,20 @@ impl AppState {
         } else {
             find_window(&self.last_windows, "7d").map(|w| w.utilization)
         };
-        let split_7d = self.show_both_windows && seven_d.is_some();
-
         let mut specs = vec![gauge::GaugeSpec {
             primary,
-            secondary: if split_7d { None } else { seven_d },
+            // 7d renders either as its own gauge or as a muted underlay, never both.
+            secondary: if self.show_both_windows {
+                None
+            } else {
+                seven_d
+            },
         }];
-        if split_7d {
+        if self.show_both_windows
+            && let Some(s) = seven_d
+        {
             specs.push(gauge::GaugeSpec {
-                primary: seven_d.unwrap_or(0.0),
+                primary: s,
                 secondary: None,
             });
         }
@@ -1054,7 +1059,7 @@ impl AppDelegate {
                     mtm,
                 ));
             } else {
-                let mut credits_shown = false;
+                let has_7d = state.last_windows.iter().any(|w| w.label == "7d");
                 for w in &state.last_windows {
                     let pct = (w.utilization * 100.0) as i32;
                     let reset = api::format_reset_time(w.resets_at.as_deref());
@@ -1078,10 +1083,10 @@ impl AppDelegate {
                         && let Some(ref c) = state.last_credits
                     {
                         add_credits_items(menu, c, &mono, &mono_small, mtm);
-                        credits_shown = true;
                     }
                 }
-                if !credits_shown && let Some(ref c) = state.last_credits {
+                // No weekly window to anchor to — fall back to the end of the list.
+                if !has_7d && let Some(ref c) = state.last_credits {
                     add_credits_items(menu, c, &mono, &mono_small, mtm);
                 }
             }
@@ -1497,43 +1502,13 @@ fn save_preferences(prefs: &Preferences) {
 
 fn load_preferences() -> Preferences {
     let defaults = NSUserDefaults::standardUserDefaults();
-    let interval = defaults.doubleForKey(&NSString::from_str("poll_interval"));
-    let threshold = defaults.doubleForKey(&NSString::from_str("alert_threshold"));
-    let threshold_7d = defaults.doubleForKey(&NSString::from_str("alert_threshold_7d"));
-    let threshold_credits = defaults.doubleForKey(&NSString::from_str("alert_threshold_credits"));
 
-    // doubleForKey returns 0.0 if not set — use defaults in that case
-    let interval = if interval > 0.0 {
-        interval
-    } else {
-        POLL_INTERVAL_DEFAULT
+    // doubleForKey returns 0.0 when unset — treat that as "use the default".
+    let double_pref = |key: &str, default: f64| {
+        let v = defaults.doubleForKey(&NSString::from_str(key));
+        if v > 0.0 { v } else { default }
     };
-    let threshold = if threshold > 0.0 {
-        threshold
-    } else {
-        ALERT_THRESHOLD_DEFAULT
-    };
-    let threshold_7d = if threshold_7d > 0.0 {
-        threshold_7d
-    } else {
-        ALERT_THRESHOLD_7D_DEFAULT
-    };
-    let threshold_credits = if threshold_credits > 0.0 {
-        threshold_credits
-    } else {
-        ALERT_THRESHOLD_CREDITS_DEFAULT
-    };
-
-    // boolForKey returns false if not set — default to true (polling on)
-    let has_polling_key = defaults
-        .objectForKey(&NSString::from_str("polling_enabled"))
-        .is_some();
-    let polling = if has_polling_key {
-        defaults.boolForKey(&NSString::from_str("polling_enabled"))
-    } else {
-        true
-    };
-
+    // boolForKey returns false when unset, so probe for the key before trusting it.
     let bool_pref = |key: &str, default: bool| {
         if defaults.objectForKey(&NSString::from_str(key)).is_some() {
             defaults.boolForKey(&NSString::from_str(key))
@@ -1543,11 +1518,14 @@ fn load_preferences() -> Preferences {
     };
 
     Preferences {
-        poll_interval: interval,
-        alert_threshold: threshold,
-        alert_threshold_7d: threshold_7d,
-        alert_threshold_credits: threshold_credits,
-        polling_enabled: polling,
+        poll_interval: double_pref("poll_interval", POLL_INTERVAL_DEFAULT),
+        alert_threshold: double_pref("alert_threshold", ALERT_THRESHOLD_DEFAULT),
+        alert_threshold_7d: double_pref("alert_threshold_7d", ALERT_THRESHOLD_7D_DEFAULT),
+        alert_threshold_credits: double_pref(
+            "alert_threshold_credits",
+            ALERT_THRESHOLD_CREDITS_DEFAULT,
+        ),
+        polling_enabled: bool_pref("polling_enabled", true),
         show_both_windows: bool_pref("show_both_windows", SHOW_BOTH_WINDOWS_DEFAULT),
         show_credits: bool_pref("show_credits", SHOW_CREDITS_DEFAULT),
     }
