@@ -97,4 +97,4 @@ The version in `VERSION` follows [semantic versioning](https://semver.org/): `fe
 
 ## License
 
-Copyright (c) 2025-2026 Harbr Data. All rights reserved.
+Copyright (c) Harbr Group Limited 2026. All rights reserved.

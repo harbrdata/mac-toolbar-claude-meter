@@ -122,6 +122,8 @@ cat > "$CONTENTS/Info.plist" << EOF
     <true/>
     <key>LSMinimumSystemVersion</key>
     <string>13.0</string>
+    <key>NSHumanReadableCopyright</key>
+    <string>Copyright (c) 2026 Harbr Group Limited. All rights reserved.</string>
 </dict>
 </plist>
 EOF
