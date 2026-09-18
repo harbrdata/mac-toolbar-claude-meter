@@ -200,8 +200,8 @@ pub fn parse_credits(data: &serde_json::Value) -> Option<Credits> {
 
 fn parse_credits_extra_usage(data: &serde_json::Value) -> Option<Credits> {
     let e = data.get("extra_usage")?;
-    let used_minor = e.get("used_credits")?.as_f64()? as i64;
-    let limit_minor = e.get("monthly_limit")?.as_i64()?;
+    let used_minor = minor_units(e.get("used_credits")?)?;
+    let limit_minor = minor_units(e.get("monthly_limit")?)?;
     let (currency, exponent) = currency_and_exponent(e, "currency", "decimal_places");
     Some(Credits {
         enabled: e
@@ -224,8 +224,8 @@ fn parse_credits_spend(data: &serde_json::Value) -> Option<Credits> {
     let s = data.get("spend")?;
     let used = s.get("used")?;
     let limit = s.get("limit")?;
-    let used_minor = used.get("amount_minor")?.as_i64()?;
-    let limit_minor = limit.get("amount_minor")?.as_i64()?;
+    let used_minor = minor_units(used.get("amount_minor")?)?;
+    let limit_minor = minor_units(limit.get("amount_minor")?)?;
     let (currency, exponent) = currency_and_exponent(used, "currency", "exponent");
     Some(Credits {
         enabled: s.get("enabled").and_then(|v| v.as_bool()).unwrap_or(false),
@@ -235,6 +235,12 @@ fn parse_credits_spend(data: &serde_json::Value) -> Option<Credits> {
         currency,
         exponent,
     })
+}
+
+/// Minor-unit amounts come back as either an integer or a float depending on the field,
+/// so accept both and round rather than truncating a fractional penny off the total.
+fn minor_units(v: &serde_json::Value) -> Option<i64> {
+    v.as_i64().or_else(|| v.as_f64().map(|f| f.round() as i64))
 }
 
 /// Currency code and decimal exponent for a credits payload, defaulting to USD/2 when
@@ -394,6 +400,20 @@ mod tests {
         assert_eq!(c.used_minor, 500);
         assert!((c.utilization - 0.25).abs() < 1e-9);
         assert_eq!(c.currency, "USD");
+    }
+
+    #[test]
+    fn test_parse_credits_rounds_fractional_minor_units() {
+        let data = json!({
+            "extra_usage": {
+                "is_enabled": true,
+                "monthly_limit": 30000.0,
+                "used_credits": 10116.999999999998,
+            },
+        });
+        let c = parse_credits(&data).unwrap();
+        assert_eq!(c.used_minor, 10117);
+        assert_eq!(c.limit_minor, 30000);
     }
 
     #[test]

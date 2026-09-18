@@ -1340,13 +1340,13 @@ fn alert_threshold_item(
     let item = NSMenuItem::new(mtm);
     item.setTitle(&NSString::from_str(title));
     let submenu = NSMenu::new(mtm);
-    for (i, &pct) in ALERT_THRESHOLD_OPTIONS.iter().enumerate() {
+    for (&pct, &sel) in ALERT_THRESHOLD_OPTIONS.iter().zip(selectors) {
         let label = if pct >= 100 {
             "Off".to_string()
         } else {
             format!("{}%", pct)
         };
-        let opt = action_item(&label, selectors[i], target, mtm);
+        let opt = action_item(&label, sel, target, mtm);
         let threshold_val = if pct >= 100 { 1.01 } else { pct as f64 / 100.0 };
         if (threshold_val - current).abs() < 0.001 {
             opt.setState(1); // checkmark
