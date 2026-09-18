@@ -12,7 +12,7 @@ use objc2::{
 use objc2_app_kit::*;
 use objc2_foundation::*;
 
-use crate::api::{self, FetchResult, UsageWindow};
+use crate::api::{self, Credits, FetchResult, UsageWindow};
 use crate::gauge;
 use crate::keychain;
 use crate::launch_agent;
@@ -83,18 +83,19 @@ const LOG_CAPACITY: usize = 20;
 const ALERT_THRESHOLD_DEFAULT: f64 = 0.95;
 const ALERT_THRESHOLD_OPTIONS: &[u64] = &[75, 80, 85, 90, 95, 100];
 const ALERT_THRESHOLD_7D_DEFAULT: f64 = 0.80;
+const ALERT_THRESHOLD_CREDITS_DEFAULT: f64 = 0.80;
 const SHOW_BOTH_WINDOWS_DEFAULT: bool = false;
-/// Icon width multiplier used for paused/error icons when dual-window mode is on,
-/// matching the width of `create_dual_gauge_icon`'s output at the same `ICON_SIZE`.
-const DUAL_WIDTH_MULT: f64 = 2.15;
+const SHOW_CREDITS_DEFAULT: bool = false;
 
 /// Persistable user preferences, backed by `NSUserDefaults`.
 struct Preferences {
     poll_interval: f64,
     alert_threshold: f64,
     alert_threshold_7d: f64,
+    alert_threshold_credits: f64,
     polling_enabled: bool,
     show_both_windows: bool,
+    show_credits: bool,
 }
 
 /// Outcome of comparing a window's utilization against its alert threshold.
@@ -168,6 +169,20 @@ fn alert_checks(
     checks
 }
 
+/// Notification/log text for a credits alert, e.g.
+/// `Usage credits at 85% of the monthly cap — £45.00 left`.
+fn credits_alert_body(credits: &Credits) -> String {
+    format!(
+        "Usage credits at {}% of the monthly cap \u{2014} {} left",
+        (credits.utilization * 100.0) as u32,
+        api::format_money(
+            credits.remaining_minor(),
+            &credits.currency,
+            credits.exponent
+        )
+    )
+}
+
 /// Which icon variant `refresh_icon` should draw.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum IconMode {
@@ -193,6 +208,7 @@ pub struct AppState {
     polling_enabled: bool,
     last_windows: Vec<UsageWindow>,
     last_primary: Option<UsageWindow>,
+    last_credits: Option<Credits>,
     rate_limited: bool,
     rate_limit_resume: Option<Instant>,
     rate_limit_backoff: u32,
@@ -207,7 +223,10 @@ pub struct AppState {
     alert_fired: bool,
     alert_threshold_7d: f64,
     alert_fired_7d: bool,
+    alert_threshold_credits: f64,
+    alert_fired_credits: bool,
     show_both_windows: bool,
+    show_credits: bool,
 }
 
 impl AppState {
@@ -217,9 +236,49 @@ impl AppState {
             poll_interval: self.poll_interval,
             alert_threshold: self.alert_threshold,
             alert_threshold_7d: self.alert_threshold_7d,
+            alert_threshold_credits: self.alert_threshold_credits,
             polling_enabled: self.polling_enabled,
             show_both_windows: self.show_both_windows,
+            show_credits: self.show_credits,
         }
+    }
+
+    /// Gauges to draw in the status bar, left to right: the primary window (with a muted
+    /// 7d underlay when the 7d gauge isn't shown separately), then 7d, then credits.
+    fn gauge_specs(&self) -> Vec<gauge::GaugeSpec> {
+        let primary = self
+            .last_primary
+            .as_ref()
+            .map(|w| w.utilization)
+            .unwrap_or(0.0);
+        // Suppress the 7d value when the primary window already is the 7d one, so it
+        // can't be rendered twice.
+        let seven_d = if primary_is_seven_day(&self.last_primary) {
+            None
+        } else {
+            find_window(&self.last_windows, "7d").map(|w| w.utilization)
+        };
+        let split_7d = self.show_both_windows && seven_d.is_some();
+
+        let mut specs = vec![gauge::GaugeSpec {
+            primary,
+            secondary: if split_7d { None } else { seven_d },
+        }];
+        if split_7d {
+            specs.push(gauge::GaugeSpec {
+                primary: seven_d.unwrap_or(0.0),
+                secondary: None,
+            });
+        }
+        if self.show_credits
+            && let Some(ref c) = self.last_credits
+        {
+            specs.push(gauge::GaugeSpec {
+                primary: c.utilization,
+                secondary: None,
+            });
+        }
+        specs
     }
 
     fn push_log(&mut self, msg: String) {
@@ -359,8 +418,24 @@ define_class!(
         #[unsafe(method(setAlert7d100:))]
         fn set_alert_7d_100(&self, _sender: &AnyObject) { self.set_alert_threshold_7d(1.01); }
 
+        #[unsafe(method(setAlertCredits75:))]
+        fn set_alert_credits_75(&self, _sender: &AnyObject) { self.set_alert_threshold_credits(0.75); }
+        #[unsafe(method(setAlertCredits80:))]
+        fn set_alert_credits_80(&self, _sender: &AnyObject) { self.set_alert_threshold_credits(0.80); }
+        #[unsafe(method(setAlertCredits85:))]
+        fn set_alert_credits_85(&self, _sender: &AnyObject) { self.set_alert_threshold_credits(0.85); }
+        #[unsafe(method(setAlertCredits90:))]
+        fn set_alert_credits_90(&self, _sender: &AnyObject) { self.set_alert_threshold_credits(0.90); }
+        #[unsafe(method(setAlertCredits95:))]
+        fn set_alert_credits_95(&self, _sender: &AnyObject) { self.set_alert_threshold_credits(0.95); }
+        #[unsafe(method(setAlertCredits100:))]
+        fn set_alert_credits_100(&self, _sender: &AnyObject) { self.set_alert_threshold_credits(1.01); }
+
         #[unsafe(method(toggleShowBoth:))]
         fn toggle_show_both_action(&self, _sender: &AnyObject) { self.toggle_show_both(); }
+
+        #[unsafe(method(toggleShowCredits:))]
+        fn toggle_show_credits_action(&self, _sender: &AnyObject) { self.toggle_show_credits(); }
 
         #[unsafe(method(toggleLoginItem:))]
         fn toggle_login_item(&self, _sender: &AnyObject) {
@@ -415,6 +490,7 @@ impl AppDelegate {
                 polling_enabled: prefs.polling_enabled,
                 last_windows: Vec::new(),
                 last_primary: None,
+                last_credits: None,
                 rate_limited: false,
                 rate_limit_resume: None,
                 rate_limit_backoff: 0,
@@ -429,7 +505,10 @@ impl AppDelegate {
                 alert_fired: false,
                 alert_threshold_7d: prefs.alert_threshold_7d,
                 alert_fired_7d: false,
+                alert_threshold_credits: prefs.alert_threshold_credits,
+                alert_fired_credits: false,
                 show_both_windows: prefs.show_both_windows,
+                show_credits: prefs.show_credits,
             }),
             fetch_in_progress: Cell::new(false),
         });
@@ -511,48 +590,49 @@ impl AppDelegate {
     }
 
     fn set_alert_threshold(&self, threshold: f64) {
-        let mut state = self.ivars().state.borrow_mut();
-        state.alert_threshold = threshold;
-        state.alert_fired = false;
-        if threshold > 1.0 {
-            state.push_log(format!("{} Usage alert disabled", timestamp()));
-        } else {
-            state.push_log(format!(
-                "{} Alert threshold set to {}%",
-                timestamp(),
-                (threshold * 100.0) as u32
-            ));
-        }
-        let prefs = state.to_preferences();
-        drop(state);
-        save_preferences(&prefs);
-        // Immediately check if current usage exceeds the new threshold
-        self.check_and_fire_alert();
-        self.rebuild_menu();
+        self.set_threshold(threshold, "5h", |s| {
+            s.alert_threshold = threshold;
+            s.alert_fired = false;
+        });
     }
 
     fn set_alert_threshold_7d(&self, threshold: f64) {
+        self.set_threshold(threshold, "7d", |s| {
+            s.alert_threshold_7d = threshold;
+            s.alert_fired_7d = false;
+        });
+    }
+
+    fn set_alert_threshold_credits(&self, threshold: f64) {
+        self.set_threshold(threshold, "Credits", |s| {
+            s.alert_threshold_credits = threshold;
+            s.alert_fired_credits = false;
+        });
+    }
+
+    /// Apply an alert threshold change: store it, clear the fired flag, persist, then
+    /// re-check immediately so a threshold dropped below current usage fires at once.
+    fn set_threshold(&self, threshold: f64, label: &str, apply: impl FnOnce(&mut AppState)) {
         let mut state = self.ivars().state.borrow_mut();
-        state.alert_threshold_7d = threshold;
-        state.alert_fired_7d = false;
+        apply(&mut state);
         if threshold > 1.0 {
-            state.push_log(format!("{} 7d usage alert disabled", timestamp()));
+            state.push_log(format!("{} {} usage alert disabled", timestamp(), label));
         } else {
             state.push_log(format!(
-                "{} 7d alert threshold set to {}%",
+                "{} {} alert threshold set to {}%",
                 timestamp(),
+                label,
                 (threshold * 100.0) as u32
             ));
         }
         let prefs = state.to_preferences();
         drop(state);
         save_preferences(&prefs);
-        // Immediately check if current usage exceeds the new threshold
         self.check_and_fire_alert();
         self.rebuild_menu();
     }
 
-    /// Check both the 5h and 7d windows against their respective alert
+    /// Check the 5h and 7d windows plus usage credits against their respective alert
     /// thresholds/fired-flags, firing or resetting each independently.
     fn check_and_fire_alert(&self) {
         let mut state = self.ivars().state.borrow_mut();
@@ -589,6 +669,23 @@ impl AppDelegate {
                 AlertDecision::None => {}
             }
         }
+
+        // Credits are spend against a monthly cap rather than a usage window, so they
+        // carry their own threshold and are only checked while credits are switched on.
+        if let Some(credits) = state.last_credits.clone().filter(|c| c.enabled) {
+            let threshold = state.alert_threshold_credits;
+            match alert_decision(credits.utilization, threshold, state.alert_fired_credits) {
+                AlertDecision::Fire => {
+                    state.alert_fired_credits = true;
+                    let body = credits_alert_body(&credits);
+                    state.push_log(format!("{} Alert: {}", timestamp(), body));
+                    to_notify.push(("Credits".to_string(), body));
+                }
+                AlertDecision::Reset => state.alert_fired_credits = false,
+                AlertDecision::None => {}
+            }
+        }
+
         drop(state);
 
         for (id, body) in &to_notify {
@@ -612,13 +709,28 @@ impl AppDelegate {
     }
 
     fn toggle_show_both(&self) {
+        self.toggle_dial("Show both windows", |s| {
+            s.show_both_windows = !s.show_both_windows;
+            s.show_both_windows
+        });
+    }
+
+    fn toggle_show_credits(&self) {
+        self.toggle_dial("Show credits", |s| {
+            s.show_credits = !s.show_credits;
+            s.show_credits
+        });
+    }
+
+    /// Flip a status-bar dial preference, persist it, and redraw icon and menu.
+    fn toggle_dial(&self, log_label: &str, flip: impl FnOnce(&mut AppState) -> bool) {
         let mut state = self.ivars().state.borrow_mut();
-        state.show_both_windows = !state.show_both_windows;
-        let show_both = state.show_both_windows;
+        let enabled = flip(&mut state);
         state.push_log(format!(
-            "{} Show both windows: {}",
+            "{} {}: {}",
             timestamp(),
-            if show_both { "on" } else { "off" }
+            log_label,
+            if enabled { "on" } else { "off" }
         ));
         let prefs = state.to_preferences();
         let paused = !state.polling_enabled || state.rate_limited;
@@ -633,37 +745,19 @@ impl AppDelegate {
     }
 
     /// Draw and set the status-item icon for the given mode, keeping the
-    /// fetch-success, pause, and error paths visually consistent (dual-gauge
-    /// when both-windows mode is on and a 7d window is known, single gauge
-    /// with a muted 7d underlay otherwise).
+    /// fetch-success, pause, and error paths visually consistent — one gauge per
+    /// enabled dial (see `AppState::gauge_specs`), at the same width in every mode.
     fn refresh_icon(&self, mode: IconMode) {
         let state = self.ivars().state.borrow();
-        let show_both = state.show_both_windows;
-        let five_h = state
-            .last_primary
-            .as_ref()
-            .map(|w| w.utilization)
-            .unwrap_or(0.0);
-        // Suppress the 7d value when the primary window already is the 7d one, so dual
-        // mode can't render the same gauge twice.
-        let seven_d = if primary_is_seven_day(&state.last_primary) {
-            None
-        } else {
-            find_window(&state.last_windows, "7d").map(|w| w.utilization)
-        };
+        let specs = state.gauge_specs();
         drop(state);
 
         // One rule for all three modes, so the status item never changes width purely
-        // because it is paused or erroring. Dual width needs a 7d value to show, which is
-        // absent until the first successful fetch.
-        let dual = show_both && seven_d.is_some();
-        let width_mult = if dual { DUAL_WIDTH_MULT } else { 1.0 };
+        // because it is paused or erroring.
+        let width_mult = gauge::row_width_mult(specs.len());
 
         let icon = match mode {
-            IconMode::Normal => match seven_d {
-                Some(s) if dual => gauge::create_dual_gauge_icon(five_h, s, ICON_SIZE),
-                _ => gauge::create_gauge_icon(five_h, seven_d, ICON_SIZE),
-            },
+            IconMode::Normal => gauge::create_gauge_row_icon(specs, ICON_SIZE),
             IconMode::Paused => gauge::create_paused_icon(ICON_SIZE, width_mult),
             IconMode::Error => gauge::create_error_icon(ICON_SIZE, width_mult),
         };
@@ -784,6 +878,7 @@ impl AppDelegate {
                 match fetch_result {
                     FetchResult::Ok(data) => {
                         let windows = api::parse_usage(&data);
+                        let credits = api::parse_credits(&data);
                         let primary = windows
                             .iter()
                             .find(|w| w.label == "5h")
@@ -799,6 +894,7 @@ impl AppDelegate {
                         state.rate_limit_backoff = 0;
                         state.last_windows = windows;
                         state.last_primary = primary.clone();
+                        state.last_credits = credits;
                         drop(state);
                         app.ivars().fetch_in_progress.set(false);
 
@@ -958,6 +1054,7 @@ impl AppDelegate {
                     mtm,
                 ));
             } else {
+                let mut credits_shown = false;
                 for w in &state.last_windows {
                     let pct = (w.utilization * 100.0) as i32;
                     let reset = api::format_reset_time(w.resets_at.as_deref());
@@ -975,6 +1072,17 @@ impl AppDelegate {
                     );
                     menu.addItem(&reset_item);
                     menu.addItem(&NSMenuItem::separatorItem(mtm));
+
+                    // Credits sit directly under the weekly window they top up.
+                    if w.label == "7d"
+                        && let Some(ref c) = state.last_credits
+                    {
+                        add_credits_items(menu, c, &mono, &mono_small, mtm);
+                        credits_shown = true;
+                    }
+                }
+                if !credits_shown && let Some(ref c) = state.last_credits {
+                    add_credits_items(menu, c, &mono, &mono_small, mtm);
                 }
             }
 
@@ -1007,6 +1115,18 @@ impl AppDelegate {
                 mtm,
             ));
 
+            let show_credits_label = if state.show_credits {
+                "Show Credits Dial: On"
+            } else {
+                "Show Credits Dial: Off"
+            };
+            menu.addItem(&action_item(
+                show_credits_label,
+                sel!(toggleShowCredits:),
+                &this,
+                mtm,
+            ));
+
             // Interval submenu
             let interval_item = NSMenuItem::new(mtm);
             interval_item.setTitle(&NSString::from_str("Refresh Interval"));
@@ -1032,61 +1152,50 @@ impl AppDelegate {
             interval_item.setSubmenu(Some(&interval_menu));
             menu.addItem(&interval_item);
 
-            // 5h alert threshold submenu
-            let alert_item = NSMenuItem::new(mtm);
-            alert_item.setTitle(&NSString::from_str("5h Alert Threshold"));
-            let alert_menu = NSMenu::new(mtm);
-            let alert_selectors = [
-                sel!(setAlert75:),
-                sel!(setAlert80:),
-                sel!(setAlert85:),
-                sel!(setAlert90:),
-                sel!(setAlert95:),
-                sel!(setAlert100:),
-            ];
-            for (i, &pct) in ALERT_THRESHOLD_OPTIONS.iter().enumerate() {
-                let label = if pct >= 100 {
-                    "Off".to_string()
-                } else {
-                    format!("{}%", pct)
-                };
-                let opt = action_item(&label, alert_selectors[i], &this, mtm);
-                let threshold_val = if pct >= 100 { 1.01 } else { pct as f64 / 100.0 };
-                if (threshold_val - state.alert_threshold).abs() < 0.001 {
-                    opt.setState(1);
-                }
-                alert_menu.addItem(&opt);
-            }
-            alert_item.setSubmenu(Some(&alert_menu));
-            menu.addItem(&alert_item);
+            menu.addItem(&alert_threshold_item(
+                "5h Alert Threshold",
+                &[
+                    sel!(setAlert75:),
+                    sel!(setAlert80:),
+                    sel!(setAlert85:),
+                    sel!(setAlert90:),
+                    sel!(setAlert95:),
+                    sel!(setAlert100:),
+                ],
+                state.alert_threshold,
+                &this,
+                mtm,
+            ));
 
-            // 7d alert threshold submenu
-            let alert_7d_item = NSMenuItem::new(mtm);
-            alert_7d_item.setTitle(&NSString::from_str("7d Alert Threshold"));
-            let alert_7d_menu = NSMenu::new(mtm);
-            let alert_7d_selectors = [
-                sel!(setAlert7d75:),
-                sel!(setAlert7d80:),
-                sel!(setAlert7d85:),
-                sel!(setAlert7d90:),
-                sel!(setAlert7d95:),
-                sel!(setAlert7d100:),
-            ];
-            for (i, &pct) in ALERT_THRESHOLD_OPTIONS.iter().enumerate() {
-                let label = if pct >= 100 {
-                    "Off".to_string()
-                } else {
-                    format!("{}%", pct)
-                };
-                let opt = action_item(&label, alert_7d_selectors[i], &this, mtm);
-                let threshold_val = if pct >= 100 { 1.01 } else { pct as f64 / 100.0 };
-                if (threshold_val - state.alert_threshold_7d).abs() < 0.001 {
-                    opt.setState(1);
-                }
-                alert_7d_menu.addItem(&opt);
-            }
-            alert_7d_item.setSubmenu(Some(&alert_7d_menu));
-            menu.addItem(&alert_7d_item);
+            menu.addItem(&alert_threshold_item(
+                "7d Alert Threshold",
+                &[
+                    sel!(setAlert7d75:),
+                    sel!(setAlert7d80:),
+                    sel!(setAlert7d85:),
+                    sel!(setAlert7d90:),
+                    sel!(setAlert7d95:),
+                    sel!(setAlert7d100:),
+                ],
+                state.alert_threshold_7d,
+                &this,
+                mtm,
+            ));
+
+            menu.addItem(&alert_threshold_item(
+                "Credits Alert Threshold",
+                &[
+                    sel!(setAlertCredits75:),
+                    sel!(setAlertCredits80:),
+                    sel!(setAlertCredits85:),
+                    sel!(setAlertCredits90:),
+                    sel!(setAlertCredits95:),
+                    sel!(setAlertCredits100:),
+                ],
+                state.alert_threshold_credits,
+                &this,
+                mtm,
+            ));
 
             // Login item toggle
             let login_label = if launch_agent::is_enabled() {
@@ -1214,6 +1323,83 @@ fn styled_item(
     item
 }
 
+/// Build an alert-threshold submenu from `ALERT_THRESHOLD_OPTIONS`, ticking whichever
+/// option matches `current`. `selectors` must be in the same order as the options.
+fn alert_threshold_item(
+    title: &str,
+    selectors: &[Sel],
+    current: f64,
+    target: &NSObject,
+    mtm: MainThreadMarker,
+) -> Retained<NSMenuItem> {
+    let item = NSMenuItem::new(mtm);
+    item.setTitle(&NSString::from_str(title));
+    let submenu = NSMenu::new(mtm);
+    for (i, &pct) in ALERT_THRESHOLD_OPTIONS.iter().enumerate() {
+        let label = if pct >= 100 {
+            "Off".to_string()
+        } else {
+            format!("{}%", pct)
+        };
+        let opt = action_item(&label, selectors[i], target, mtm);
+        let threshold_val = if pct >= 100 { 1.01 } else { pct as f64 / 100.0 };
+        if (threshold_val - current).abs() < 0.001 {
+            opt.setState(1); // checkmark
+        }
+        submenu.addItem(&opt);
+    }
+    item.setSubmenu(Some(&submenu));
+    item
+}
+
+/// Render the usage-credits rows: a gauge + bar line, then the remaining balance.
+fn add_credits_items(
+    menu: &NSMenu,
+    credits: &Credits,
+    font: &NSFont,
+    small_font: &NSFont,
+    mtm: MainThreadMarker,
+) {
+    if !credits.enabled {
+        menu.addItem(&styled_item(
+            " Credits: off",
+            font,
+            Some(&NSColor::secondaryLabelColor()),
+            mtm,
+        ));
+        menu.addItem(&NSMenuItem::separatorItem(mtm));
+        return;
+    }
+
+    let pct = (credits.utilization * 100.0) as i32;
+    let line = gradient_bar_item(
+        &format!(" Credits: {pct}%  "),
+        credits.utilization,
+        20,
+        font,
+        mtm,
+    );
+    line.setImage(Some(&gauge::create_gauge_icon(
+        credits.utilization,
+        None,
+        16.0,
+    )));
+    menu.addItem(&line);
+
+    let money = |minor| api::format_money(minor, &credits.currency, credits.exponent);
+    menu.addItem(&styled_item(
+        &format!(
+            "       {} left of {}",
+            money(credits.remaining_minor()),
+            money(credits.limit_minor)
+        ),
+        small_font,
+        None,
+        mtm,
+    ));
+    menu.addItem(&NSMenuItem::separatorItem(mtm));
+}
+
 fn gradient_bar_item(
     label: &str,
     utilization: f64,
@@ -1294,6 +1480,10 @@ fn save_preferences(prefs: &Preferences) {
         prefs.alert_threshold_7d,
         &NSString::from_str("alert_threshold_7d"),
     );
+    defaults.setDouble_forKey(
+        prefs.alert_threshold_credits,
+        &NSString::from_str("alert_threshold_credits"),
+    );
     defaults.setBool_forKey(
         prefs.polling_enabled,
         &NSString::from_str("polling_enabled"),
@@ -1302,6 +1492,7 @@ fn save_preferences(prefs: &Preferences) {
         prefs.show_both_windows,
         &NSString::from_str("show_both_windows"),
     );
+    defaults.setBool_forKey(prefs.show_credits, &NSString::from_str("show_credits"));
 }
 
 fn load_preferences() -> Preferences {
@@ -1309,6 +1500,7 @@ fn load_preferences() -> Preferences {
     let interval = defaults.doubleForKey(&NSString::from_str("poll_interval"));
     let threshold = defaults.doubleForKey(&NSString::from_str("alert_threshold"));
     let threshold_7d = defaults.doubleForKey(&NSString::from_str("alert_threshold_7d"));
+    let threshold_credits = defaults.doubleForKey(&NSString::from_str("alert_threshold_credits"));
 
     // doubleForKey returns 0.0 if not set — use defaults in that case
     let interval = if interval > 0.0 {
@@ -1326,6 +1518,11 @@ fn load_preferences() -> Preferences {
     } else {
         ALERT_THRESHOLD_7D_DEFAULT
     };
+    let threshold_credits = if threshold_credits > 0.0 {
+        threshold_credits
+    } else {
+        ALERT_THRESHOLD_CREDITS_DEFAULT
+    };
 
     // boolForKey returns false if not set — default to true (polling on)
     let has_polling_key = defaults
@@ -1337,21 +1534,22 @@ fn load_preferences() -> Preferences {
         true
     };
 
-    let has_show_both_key = defaults
-        .objectForKey(&NSString::from_str("show_both_windows"))
-        .is_some();
-    let show_both_windows = if has_show_both_key {
-        defaults.boolForKey(&NSString::from_str("show_both_windows"))
-    } else {
-        SHOW_BOTH_WINDOWS_DEFAULT
+    let bool_pref = |key: &str, default: bool| {
+        if defaults.objectForKey(&NSString::from_str(key)).is_some() {
+            defaults.boolForKey(&NSString::from_str(key))
+        } else {
+            default
+        }
     };
 
     Preferences {
         poll_interval: interval,
         alert_threshold: threshold,
         alert_threshold_7d: threshold_7d,
+        alert_threshold_credits: threshold_credits,
         polling_enabled: polling,
-        show_both_windows,
+        show_both_windows: bool_pref("show_both_windows", SHOW_BOTH_WINDOWS_DEFAULT),
+        show_credits: bool_pref("show_credits", SHOW_CREDITS_DEFAULT),
     }
 }
 
@@ -1399,6 +1597,33 @@ mod tests {
             utilization,
             resets_at: None,
         }
+    }
+
+    fn credits(utilization: f64, used_minor: i64, limit_minor: i64) -> Credits {
+        Credits {
+            enabled: true,
+            utilization,
+            used_minor,
+            limit_minor,
+            currency: "GBP".into(),
+            exponent: 2,
+        }
+    }
+
+    #[test]
+    fn test_credits_alert_body() {
+        assert_eq!(
+            credits_alert_body(&credits(0.85, 25500, 30000)),
+            "Usage credits at 85% of the monthly cap \u{2014} £45.00 left"
+        );
+    }
+
+    #[test]
+    fn test_credits_alert_body_fully_spent() {
+        assert_eq!(
+            credits_alert_body(&credits(1.0, 30000, 30000)),
+            "Usage credits at 100% of the monthly cap \u{2014} £0.00 left"
+        );
     }
 
     #[test]

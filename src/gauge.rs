@@ -155,15 +155,30 @@ pub fn create_gauge_icon(primary: f64, secondary: Option<f64>, size: f64) -> Ret
     })
 }
 
-pub fn create_dual_gauge_icon(primary: f64, secondary: f64, size: f64) -> Retained<NSImage> {
-    let width = 2.0 * size + 0.15 * size;
-    let height = size;
-    create_image_with_drawing(width, height, move |_w, h| {
+/// One gauge in a status-bar row: a primary value plus an optional muted underlay.
+#[derive(Debug, Clone, Copy)]
+pub struct GaugeSpec {
+    pub primary: f64,
+    pub secondary: Option<f64>,
+}
+
+/// Gap between adjacent gauges in a row, as a fraction of `size`.
+const GAUGE_GAP: f64 = 0.15;
+
+/// Total width of a row of `count` gauges, as a multiple of `size`.
+pub fn row_width_mult(count: usize) -> f64 {
+    let n = count.max(1) as f64;
+    n + (n - 1.0) * GAUGE_GAP
+}
+
+pub fn create_gauge_row_icon(specs: Vec<GaugeSpec>, size: f64) -> Retained<NSImage> {
+    let width = size * row_width_mult(specs.len());
+    create_image_with_drawing(width, size, move |_w, h| {
         let cy = h / 2.0;
-        let left_cx = size / 2.0;
-        let right_cx = size + 0.15 * size + size / 2.0;
-        draw_gauge_at(left_cx, cy, size, primary, None);
-        draw_gauge_at(right_cx, cy, size, secondary, None);
+        for (i, spec) in specs.iter().enumerate() {
+            let cx = i as f64 * size * (1.0 + GAUGE_GAP) + size / 2.0;
+            draw_gauge_at(cx, cy, size, spec.primary, spec.secondary);
+        }
     })
 }
 
@@ -227,6 +242,14 @@ pub fn position_color_muted(position: f64) -> Retained<NSColor> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_row_width_mult() {
+        assert_eq!(row_width_mult(0), 1.0);
+        assert_eq!(row_width_mult(1), 1.0);
+        assert!((row_width_mult(2) - 2.15).abs() < 1e-9);
+        assert!((row_width_mult(3) - 3.30).abs() < 1e-9);
+    }
 
     #[test]
     fn test_severity_ok_at_zero() {
