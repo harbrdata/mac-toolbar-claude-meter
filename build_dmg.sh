@@ -148,6 +148,7 @@ cat > "$DMG_STAGE/Install.command" << 'INSTALL_SCRIPT'
 set -e
 APP_NAME="Claude-o-Meter"
 DMG_APP="$(cd "$(dirname "$0")" && pwd)/$APP_NAME.app"
+INSTALL_DIR="/Applications"
 
 echo "=== Installing $APP_NAME ==="
 echo ""
@@ -161,20 +162,81 @@ if pgrep -xq "$APP_NAME"; then
     sleep 1
 fi
 
-# Copy to /Applications
-echo "Copying to /Applications..."
-rm -rf "/Applications/$APP_NAME.app"
-cp -R "$DMG_APP" "/Applications/"
+# Copy to /Applications, elevating or falling back as needed since a
+# non-admin account cannot write to /Applications directly.
+PRIVILEGED=0
+if [ -w "$INSTALL_DIR" ]; then
+    echo "Copying to $INSTALL_DIR..."
+    rm -rf "$INSTALL_DIR/$APP_NAME.app"
+    cp -R "$DMG_APP" "$INSTALL_DIR/"
+else
+    echo "Administrator authorization is required to install to $INSTALL_DIR."
+    HELPER_DIR="$(mktemp -d)"
+    HELPER_APP="$HELPER_DIR/Claude-o-Meter Installer.app"
+    PRIV_SCRIPT="$HELPER_DIR/privileged_install.sh"
+    # Copy AND strip-quarantine/re-sign all run as root in one privileged script.
+    # The copied bundle ends up root-owned, so xattr/codesign must happen here —
+    # running them afterward as the invoking (non-root) user can silently fail.
+    cat > "$PRIV_SCRIPT" << PRIVEOF
+#!/bin/bash
+set -e
+rm -rf "$INSTALL_DIR/$APP_NAME.app"
+cp -R "$DMG_APP" "$INSTALL_DIR/"
+xattr -c "$INSTALL_DIR/$APP_NAME.app" || true
+find "$INSTALL_DIR/$APP_NAME.app" -exec xattr -c {} \; || true
+codesign --force --deep --sign - "$INSTALL_DIR/$APP_NAME.app" || true
+PRIVEOF
+    chmod +x "$PRIV_SCRIPT"
+    # osacompile (or the admin-prompt authorization it triggers) can fail — a
+    # compile error, or the prompt being cancelled/denied — and must not abort
+    # this script via set -e; fall through to the non-privileged fallback below.
+    if osacompile -o "$HELPER_APP" -e "do shell script \"bash '$PRIV_SCRIPT'\" with administrator privileges with prompt \"Claude-o-Meter Installer wants to make changes.\"" 2>/dev/null; then
+        HELPER_BIN=("$HELPER_APP"/Contents/MacOS/*)
+        if [ -x "${HELPER_BIN[0]}" ] && "${HELPER_BIN[0]}" 2>/dev/null; then
+            echo "Copied to $INSTALL_DIR."
+            PRIVILEGED=1
+        fi
+    fi
+    rm -rf "$HELPER_DIR"
+    if [ "$PRIVILEGED" != "1" ]; then
+        INSTALL_DIR="$HOME/Applications"
+        echo "Administrator authorization was not granted. Installing to your personal"
+        echo "Applications folder instead: $INSTALL_DIR"
+        mkdir -p "$INSTALL_DIR"
+        rm -rf "$INSTALL_DIR/$APP_NAME.app"
+        cp -R "$DMG_APP" "$INSTALL_DIR/"
+    fi
+fi
+
+# Verify the copy actually landed before doing anything else with it. On macOS,
+# if this app (or Terminal) isn't granted "App Management" permission, cp can
+# silently fail partway, leaving an incomplete bundle — and every step below
+# swallows its own errors, so without this check we'd sign and open a broken app.
+if [ ! -f "$INSTALL_DIR/$APP_NAME.app/Contents/MacOS/$APP_NAME" ]; then
+    echo "ERROR: Copy to $INSTALL_DIR appears incomplete."
+    echo "       This usually means Terminal (or whichever app ran this script) needs"
+    echo "       \"App Management\" permission: System Settings > Privacy & Security >"
+    echo "       App Management. Grant it and try installing again."
+    exit 1
+fi
 
 # Strip quarantine attributes and re-sign to ensure stable code signature
-# (quarantine stripping can invalidate the original signature)
-xattr -c "/Applications/$APP_NAME.app" 2>/dev/null || true
-find "/Applications/$APP_NAME.app" -exec xattr -c {} \; 2>/dev/null || true
-codesign --force --deep --sign - "/Applications/$APP_NAME.app" 2>/dev/null || true
+# (quarantine stripping can invalidate the original signature). The privileged
+# path above already did this as root against the root-owned bundle; only the
+# non-privileged copies (writable /Applications, or the ~/Applications
+# fallback) need it done here as the invoking user.
+if [ "$PRIVILEGED" != "1" ]; then
+    xattr -c "$INSTALL_DIR/$APP_NAME.app" 2>/dev/null || true
+    find "$INSTALL_DIR/$APP_NAME.app" -exec xattr -c {} \; 2>/dev/null || true
+    if ! codesign --force --deep --sign - "$INSTALL_DIR/$APP_NAME.app" 2>&1; then
+        echo "WARNING: Ad-hoc codesign of the installed app failed. It may still run,"
+        echo "         but macOS Gatekeeper could refuse to open it."
+    fi
+fi
 
 # Launch
 echo "Launching $APP_NAME..."
-open "/Applications/$APP_NAME.app"
+open "$INSTALL_DIR/$APP_NAME.app"
 
 echo ""
 echo "Done! $APP_NAME is running in your menu bar."

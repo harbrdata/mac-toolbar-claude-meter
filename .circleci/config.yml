@@ -45,6 +45,12 @@ jobs:
             - cargo-v1-{{ checksum "Cargo.lock" }}
             - cargo-v1-
       - run:
+          name: Install fileicon
+          # build_dmg.sh uses fileicon (via `command -v fileicon`) to set custom icons
+          # on Install.command and the built .dmg. It isn't preinstalled on the macOS
+          # executor, so without this the guard silently skips icon-setting.
+          command: brew install fileicon
+      - run:
           name: Install Rust toolchain and Apple targets
           command: |
             if ! command -v rustup > /dev/null 2>&1; then
