@@ -172,9 +172,15 @@ else
     echo "Administrator authorization is required to install to $INSTALL_DIR."
     RM_CMD="rm -rf '$INSTALL_DIR/$APP_NAME.app'"
     CP_CMD="cp -R '$DMG_APP' '$INSTALL_DIR/'"
-    if osascript -e "do shell script \"$RM_CMD && $CP_CMD\" with administrator privileges with prompt \"Claude-o-Meter Installer wants to make changes.\"" 2>/dev/null; then
+    HELPER_DIR="$(mktemp -d)"
+    HELPER_APP="$HELPER_DIR/Claude-o-Meter Installer.app"
+    osacompile -o "$HELPER_APP" -e "do shell script \"$RM_CMD && $CP_CMD\" with administrator privileges with prompt \"Claude-o-Meter Installer wants to make changes.\"" 2>/dev/null
+    HELPER_BIN=("$HELPER_APP"/Contents/MacOS/*)
+    if [ -x "${HELPER_BIN[0]}" ] && "${HELPER_BIN[0]}" 2>/dev/null; then
         echo "Copied to $INSTALL_DIR."
+        rm -rf "$HELPER_DIR"
     else
+        rm -rf "$HELPER_DIR"
         INSTALL_DIR="$HOME/Applications"
         echo "Administrator authorization was not granted. Installing to your personal"
         echo "Applications folder instead: $INSTALL_DIR"
