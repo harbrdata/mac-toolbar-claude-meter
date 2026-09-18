@@ -277,6 +277,7 @@ impl AppState {
         }
         if self.show_credits
             && let Some(ref c) = self.last_credits
+            && c.enabled
         {
             specs.push(gauge::GaugeSpec {
                 primary: c.utilization,
@@ -677,18 +678,23 @@ impl AppDelegate {
 
         // Credits are spend against a monthly cap rather than a usage window, so they
         // carry their own threshold and are only checked while credits are switched on.
-        if let Some(credits) = state.last_credits.clone().filter(|c| c.enabled) {
-            let threshold = state.alert_threshold_credits;
-            match alert_decision(credits.utilization, threshold, state.alert_fired_credits) {
-                AlertDecision::Fire => {
-                    state.alert_fired_credits = true;
-                    let body = credits_alert_body(&credits);
-                    state.push_log(format!("{} Alert: {}", timestamp(), body));
-                    to_notify.push(("Credits".to_string(), body));
+        match state.last_credits.clone().filter(|c| c.enabled) {
+            Some(credits) => {
+                let threshold = state.alert_threshold_credits;
+                match alert_decision(credits.utilization, threshold, state.alert_fired_credits) {
+                    AlertDecision::Fire => {
+                        state.alert_fired_credits = true;
+                        let body = credits_alert_body(&credits);
+                        state.push_log(format!("{} Alert: {}", timestamp(), body));
+                        to_notify.push(("Credits".to_string(), body));
+                    }
+                    AlertDecision::Reset => state.alert_fired_credits = false,
+                    AlertDecision::None => {}
                 }
-                AlertDecision::Reset => state.alert_fired_credits = false,
-                AlertDecision::None => {}
             }
+            // Credits disabled or absent: clear the fired flag so re-enabling at the
+            // same or higher utilization can fire again immediately.
+            None => state.alert_fired_credits = false,
         }
 
         drop(state);

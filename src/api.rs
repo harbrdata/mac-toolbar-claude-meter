@@ -417,6 +417,67 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_credits_disabled_still_carries_amounts() {
+        let data = json!({
+            "extra_usage": {
+                "is_enabled": false,
+                "monthly_limit": 30000,
+                "used_credits": 10117,
+                "utilization": 33.72,
+            },
+        });
+        let c = parse_credits(&data).unwrap();
+        assert!(!c.enabled);
+        assert_eq!(c.used_minor, 10117);
+        assert_eq!(c.limit_minor, 30000);
+        assert!((c.utilization - 0.3372).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_parse_credits_null_extra_usage_amounts_fall_back_to_spend() {
+        let data = json!({
+            "extra_usage": {
+                "is_enabled": true,
+                "monthly_limit": null,
+                "used_credits": null,
+            },
+            "spend": {
+                "used": { "amount_minor": 500, "currency": "USD", "exponent": 2 },
+                "limit": { "amount_minor": 2000, "currency": "USD", "exponent": 2 },
+                "enabled": true,
+            },
+        });
+        let c = parse_credits(&data).unwrap();
+        assert_eq!(c.used_minor, 500);
+        assert_eq!(c.limit_minor, 2000);
+    }
+
+    #[test]
+    fn test_parse_credits_null_extra_usage_amounts_no_spend_is_none() {
+        let data = json!({
+            "extra_usage": {
+                "is_enabled": true,
+                "monthly_limit": null,
+                "used_credits": null,
+            },
+        });
+        assert!(parse_credits(&data).is_none());
+    }
+
+    #[test]
+    fn test_parse_credits_extra_usage_missing_utilization_falls_back_to_ratio() {
+        let data = json!({
+            "extra_usage": {
+                "is_enabled": true,
+                "monthly_limit": 2000,
+                "used_credits": 500,
+            },
+        });
+        let c = parse_credits(&data).unwrap();
+        assert!((c.utilization - 0.25).abs() < 1e-9);
+    }
+
+    #[test]
     fn test_parse_credits_absent() {
         assert!(parse_credits(&json!({})).is_none());
     }
