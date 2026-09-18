@@ -1,3 +1,11 @@
+## [1.10.4](https://github.com/harbrdata/mac-toolbar-claude-meter/compare/1.10.3...1.10.4) (2026-09-18)
+
+
+### Bug Fixes
+
+* **about:** Add copyright ([374cfd9](https://github.com/harbrdata/mac-toolbar-claude-meter/commit/374cfd9d02c868ed5bd82868a558ea2e4149c244))
+* **about:** Show copyright in dropdown menu ([646e7d2](https://github.com/harbrdata/mac-toolbar-claude-meter/commit/646e7d2a98e45e1d8bf83b49ab592c11b92dbf2e))
+
 ## [1.10.3](https://github.com/harbrdata/mac-toolbar-claude-meter/compare/1.10.2...1.10.3) (2026-09-18)
 
 
