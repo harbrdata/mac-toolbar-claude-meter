@@ -166,11 +166,26 @@ echo "Copying to /Applications..."
 rm -rf "/Applications/$APP_NAME.app"
 cp -R "$DMG_APP" "/Applications/"
 
+# Verify the copy actually landed before doing anything else with it. On macOS,
+# if this app (or Terminal) isn't granted "App Management" permission, cp can
+# silently fail partway, leaving an incomplete bundle — and every step below
+# swallows its own errors, so without this check we'd sign and open a broken app.
+if [ ! -f "/Applications/$APP_NAME.app/Contents/MacOS/$APP_NAME" ]; then
+    echo "ERROR: Copy to /Applications appears incomplete."
+    echo "       This usually means Terminal (or whichever app ran this script) needs"
+    echo "       \"App Management\" permission: System Settings > Privacy & Security >"
+    echo "       App Management. Grant it and try installing again."
+    exit 1
+fi
+
 # Strip quarantine attributes and re-sign to ensure stable code signature
 # (quarantine stripping can invalidate the original signature)
 xattr -c "/Applications/$APP_NAME.app" 2>/dev/null || true
 find "/Applications/$APP_NAME.app" -exec xattr -c {} \; 2>/dev/null || true
-codesign --force --deep --sign - "/Applications/$APP_NAME.app" 2>/dev/null || true
+if ! codesign --force --deep --sign - "/Applications/$APP_NAME.app" 2>&1; then
+    echo "WARNING: Ad-hoc codesign of the installed app failed. It may still run,"
+    echo "         but macOS Gatekeeper could refuse to open it."
+fi
 
 # Launch
 echo "Launching $APP_NAME..."
