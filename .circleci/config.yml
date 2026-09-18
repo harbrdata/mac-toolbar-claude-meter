@@ -4,6 +4,40 @@ orbs:
   node: circleci/node@6.1.0
 
 jobs:
+  test-and-build:
+    macos:
+      xcode: "16.4.0"
+    steps:
+      - checkout
+      - restore_cache:
+          keys:
+            - cargo-v1-{{ checksum "Cargo.lock" }}
+            - cargo-v1-
+      - run:
+          name: Install Rust toolchain and Apple targets
+          command: |
+            if ! command -v rustup > /dev/null 2>&1; then
+              curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+                | sh -s -- -y --default-toolchain stable --profile minimal
+            fi
+            echo 'source "$HOME/.cargo/env"' >> "$BASH_ENV"
+            source "$HOME/.cargo/env"
+            rustup target add aarch64-apple-darwin x86_64-apple-darwin
+      - run:
+          name: cargo test
+          command: cargo test --workspace
+      - run:
+          name: cargo build (universal targets)
+          command: |
+            cargo build --release --target aarch64-apple-darwin
+            cargo build --release --target x86_64-apple-darwin
+      - save_cache:
+          key: cargo-v1-{{ checksum "Cargo.lock" }}
+          paths:
+            - ~/.cargo/registry
+            - ~/.cargo/git
+            - target
+
   semantic-release:
     # The release builds a signed universal .app and a styled DMG, which needs
     # cargo's Apple targets, lipo, codesign and hdiutil — so it must run on macOS.
@@ -80,6 +114,10 @@ jobs:
             - target
 
 workflows:
+  test-and-build:
+    jobs:
+      - test-and-build
+
   release:
     jobs:
       - semantic-release:
