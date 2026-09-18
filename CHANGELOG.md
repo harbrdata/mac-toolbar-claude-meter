@@ -1,3 +1,12 @@
+## [1.10.2](https://github.com/harbrdata/mac-toolbar-claude-meter/compare/1.10.1...1.10.2) (2026-09-18)
+
+
+### Bug Fixes
+
+* **credits:** Add credits usage info ([79a40ac](https://github.com/harbrdata/mac-toolbar-claude-meter/commit/79a40acbc61e40dcb086b65a3d2f9d160e60060e))
+* **credits:** Hide dial and reset alert flag when credits are disabled ([5181c02](https://github.com/harbrdata/mac-toolbar-claude-meter/commit/5181c02ac2eb6e53e45c1d8d4ae6ff71a9e5443c))
+* **credits:** Round fractional minor units and index selectors by zip ([5c9b738](https://github.com/harbrdata/mac-toolbar-claude-meter/commit/5c9b738c15bc802f833d3dd4a03f300315cf8bf3))
+
 ## [1.10.1](https://github.com/harbrdata/mac-toolbar-claude-meter/compare/1.10.0...1.10.1) (2026-08-13)
 
 
