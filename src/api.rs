@@ -136,11 +136,18 @@ const USAGE_WINDOWS: &[(&str, &str)] = &[
     ("seven_day_oauth_apps", "OAuth"),
 ];
 
+/// Keys carrying a `utilization` field that are not usage windows, so `parse_usage`
+/// doesn't log them as unknown.
+const NON_WINDOW_KEYS: &[&str] = &["extra_usage"];
+
 pub fn parse_usage(data: &serde_json::Value) -> Vec<UsageWindow> {
     // Warn about unknown top-level keys that look like usage windows
     if let Some(obj) = data.as_object() {
-        let known_keys: std::collections::HashSet<&str> =
-            USAGE_WINDOWS.iter().map(|(k, _)| *k).collect();
+        let known_keys: std::collections::HashSet<&str> = USAGE_WINDOWS
+            .iter()
+            .map(|(k, _)| *k)
+            .chain(NON_WINDOW_KEYS.iter().copied())
+            .collect();
         for key in obj.keys() {
             if !known_keys.contains(key.as_str()) && obj[key].get("utilization").is_some() {
                 eprintln!("Unknown usage window in API response: {key}");
@@ -164,6 +171,117 @@ pub fn parse_usage(data: &serde_json::Value) -> Vec<UsageWindow> {
             })
         })
         .collect()
+}
+
+/// Usage credits ("extra usage") — the pay-as-you-go spend that covers you once a plan
+/// limit is hit. Amounts are in minor currency units (pence, cents).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Credits {
+    pub enabled: bool,
+    /// Fraction of the monthly cap spent, 0.0–1.0.
+    pub utilization: f64,
+    pub used_minor: i64,
+    pub limit_minor: i64,
+    pub currency: String,
+    pub exponent: u32,
+}
+
+impl Credits {
+    pub fn remaining_minor(&self) -> i64 {
+        (self.limit_minor - self.used_minor).max(0)
+    }
+}
+
+/// Parse the usage-credits balance. The API currently returns this twice — `extra_usage`
+/// and the newer `spend` — so fall back to whichever is present.
+pub fn parse_credits(data: &serde_json::Value) -> Option<Credits> {
+    parse_credits_extra_usage(data).or_else(|| parse_credits_spend(data))
+}
+
+fn parse_credits_extra_usage(data: &serde_json::Value) -> Option<Credits> {
+    let e = data.get("extra_usage")?;
+    let used_minor = minor_units(e.get("used_credits")?)?;
+    let limit_minor = minor_units(e.get("monthly_limit")?)?;
+    let (currency, exponent) = currency_and_exponent(e, "currency", "decimal_places");
+    Some(Credits {
+        enabled: e
+            .get("is_enabled")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false),
+        utilization: e
+            .get("utilization")
+            .and_then(|v| v.as_f64())
+            .map(|u| u / 100.0)
+            .unwrap_or_else(|| ratio(used_minor, limit_minor)),
+        used_minor,
+        limit_minor,
+        currency,
+        exponent,
+    })
+}
+
+fn parse_credits_spend(data: &serde_json::Value) -> Option<Credits> {
+    let s = data.get("spend")?;
+    let used = s.get("used")?;
+    let limit = s.get("limit")?;
+    let used_minor = minor_units(used.get("amount_minor")?)?;
+    let limit_minor = minor_units(limit.get("amount_minor")?)?;
+    let (currency, exponent) = currency_and_exponent(used, "currency", "exponent");
+    Some(Credits {
+        enabled: s.get("enabled").and_then(|v| v.as_bool()).unwrap_or(false),
+        utilization: ratio(used_minor, limit_minor),
+        used_minor,
+        limit_minor,
+        currency,
+        exponent,
+    })
+}
+
+/// Minor-unit amounts come back as either an integer or a float depending on the field,
+/// so accept both and round rather than truncating a fractional penny off the total.
+fn minor_units(v: &serde_json::Value) -> Option<i64> {
+    v.as_i64().or_else(|| v.as_f64().map(|f| f.round() as i64))
+}
+
+/// Currency code and decimal exponent for a credits payload, defaulting to USD/2 when
+/// the API omits them. The two payload shapes name these fields differently.
+fn currency_and_exponent(
+    v: &serde_json::Value,
+    currency_key: &str,
+    exponent_key: &str,
+) -> (String, u32) {
+    let currency = v
+        .get(currency_key)
+        .and_then(|c| c.as_str())
+        .unwrap_or("USD")
+        .to_string();
+    let exponent = v.get(exponent_key).and_then(|e| e.as_u64()).unwrap_or(2) as u32;
+    (currency, exponent)
+}
+
+fn ratio(used: i64, limit: i64) -> f64 {
+    if limit > 0 {
+        used as f64 / limit as f64
+    } else {
+        0.0
+    }
+}
+
+/// Format a minor-unit amount with its currency symbol, e.g. `10117` GBP -> `£101.17`.
+pub fn format_money(minor: i64, currency: &str, exponent: u32) -> String {
+    // Unknown currencies prefix the ISO code instead of a symbol, e.g. `SEK 12.34`.
+    let prefix = match currency {
+        "GBP" => "£".to_string(),
+        "USD" => "$".to_string(),
+        "EUR" => "€".to_string(),
+        "JPY" => "¥".to_string(),
+        other => format!("{other} "),
+    };
+    format!("{prefix}{:.*}", exponent as usize, scaled(minor, exponent))
+}
+
+fn scaled(minor: i64, exponent: u32) -> f64 {
+    minor as f64 / 10f64.powi(exponent as i32)
 }
 
 /// Format reset time as human-readable countdown.
@@ -246,6 +364,154 @@ mod tests {
         let windows = parse_usage(&data);
         assert_eq!(windows.len(), 1);
         assert!(windows[0].resets_at.is_none());
+    }
+
+    #[test]
+    fn test_parse_credits_from_extra_usage() {
+        let data = json!({
+            "extra_usage": {
+                "is_enabled": true,
+                "monthly_limit": 30000,
+                "used_credits": 10117.0,
+                "utilization": 33.723333333333336,
+                "currency": "GBP",
+                "decimal_places": 2,
+            },
+        });
+        let c = parse_credits(&data).unwrap();
+        assert!(c.enabled);
+        assert_eq!(c.used_minor, 10117);
+        assert_eq!(c.limit_minor, 30000);
+        assert_eq!(c.remaining_minor(), 19883);
+        assert_eq!(c.currency, "GBP");
+        assert!((c.utilization - 0.3372333333).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_parse_credits_falls_back_to_spend() {
+        let data = json!({
+            "spend": {
+                "used": { "amount_minor": 500, "currency": "USD", "exponent": 2 },
+                "limit": { "amount_minor": 2000, "currency": "USD", "exponent": 2 },
+                "enabled": true,
+            },
+        });
+        let c = parse_credits(&data).unwrap();
+        assert_eq!(c.used_minor, 500);
+        assert!((c.utilization - 0.25).abs() < 1e-9);
+        assert_eq!(c.currency, "USD");
+    }
+
+    #[test]
+    fn test_parse_credits_rounds_fractional_minor_units() {
+        let data = json!({
+            "extra_usage": {
+                "is_enabled": true,
+                "monthly_limit": 30000.0,
+                "used_credits": 10116.999999999998,
+            },
+        });
+        let c = parse_credits(&data).unwrap();
+        assert_eq!(c.used_minor, 10117);
+        assert_eq!(c.limit_minor, 30000);
+    }
+
+    #[test]
+    fn test_parse_credits_disabled_still_carries_amounts() {
+        let data = json!({
+            "extra_usage": {
+                "is_enabled": false,
+                "monthly_limit": 30000,
+                "used_credits": 10117,
+                "utilization": 33.72,
+            },
+        });
+        let c = parse_credits(&data).unwrap();
+        assert!(!c.enabled);
+        assert_eq!(c.used_minor, 10117);
+        assert_eq!(c.limit_minor, 30000);
+        assert!((c.utilization - 0.3372).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_parse_credits_null_extra_usage_amounts_fall_back_to_spend() {
+        let data = json!({
+            "extra_usage": {
+                "is_enabled": true,
+                "monthly_limit": null,
+                "used_credits": null,
+            },
+            "spend": {
+                "used": { "amount_minor": 500, "currency": "USD", "exponent": 2 },
+                "limit": { "amount_minor": 2000, "currency": "USD", "exponent": 2 },
+                "enabled": true,
+            },
+        });
+        let c = parse_credits(&data).unwrap();
+        assert_eq!(c.used_minor, 500);
+        assert_eq!(c.limit_minor, 2000);
+    }
+
+    #[test]
+    fn test_parse_credits_null_extra_usage_amounts_no_spend_is_none() {
+        let data = json!({
+            "extra_usage": {
+                "is_enabled": true,
+                "monthly_limit": null,
+                "used_credits": null,
+            },
+        });
+        assert!(parse_credits(&data).is_none());
+    }
+
+    #[test]
+    fn test_parse_credits_extra_usage_missing_utilization_falls_back_to_ratio() {
+        let data = json!({
+            "extra_usage": {
+                "is_enabled": true,
+                "monthly_limit": 2000,
+                "used_credits": 500,
+            },
+        });
+        let c = parse_credits(&data).unwrap();
+        assert!((c.utilization - 0.25).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_parse_credits_absent() {
+        assert!(parse_credits(&json!({})).is_none());
+    }
+
+    #[test]
+    fn test_parse_credits_zero_limit_is_not_nan() {
+        let data = json!({
+            "spend": {
+                "used": { "amount_minor": 0, "currency": "USD", "exponent": 2 },
+                "limit": { "amount_minor": 0, "currency": "USD", "exponent": 2 },
+            },
+        });
+        let c = parse_credits(&data).unwrap();
+        assert_eq!(c.utilization, 0.0);
+        assert_eq!(c.remaining_minor(), 0);
+    }
+
+    #[test]
+    fn test_parse_usage_ignores_extra_usage_key() {
+        let data = json!({
+            "five_hour": { "utilization": 10.0 },
+            "extra_usage": { "utilization": 50.0 },
+        });
+        let windows = parse_usage(&data);
+        assert_eq!(windows.len(), 1);
+        assert_eq!(windows[0].label, "5h");
+    }
+
+    #[test]
+    fn test_format_money() {
+        assert_eq!(format_money(10117, "GBP", 2), "£101.17");
+        assert_eq!(format_money(500, "USD", 2), "$5.00");
+        assert_eq!(format_money(1234, "SEK", 2), "SEK 12.34");
+        assert_eq!(format_money(1234, "JPY", 0), "¥1234");
     }
 
     #[test]
