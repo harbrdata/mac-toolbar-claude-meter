@@ -1258,6 +1258,12 @@ impl AppDelegate {
                 Some(&NSColor::secondaryLabelColor()),
                 mtm,
             ));
+            menu.addItem(&styled_item(
+                "© Harbr Group Limited 2026. All rights reserved.",
+                &mono_small,
+                Some(&NSColor::secondaryLabelColor()),
+                mtm,
+            ));
             menu.addItem(&action_item("Quit", sel!(quit:), &this, mtm));
 
             // Logo banner — inserted at position 0 after all items are added
