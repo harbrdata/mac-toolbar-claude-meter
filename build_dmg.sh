@@ -148,6 +148,7 @@ cat > "$DMG_STAGE/Install.command" << 'INSTALL_SCRIPT'
 set -e
 APP_NAME="Claude-o-Meter"
 DMG_APP="$(cd "$(dirname "$0")" && pwd)/$APP_NAME.app"
+INSTALL_DIR="/Applications"
 
 echo "=== Installing $APP_NAME ==="
 echo ""
@@ -161,17 +162,34 @@ if pgrep -xq "$APP_NAME"; then
     sleep 1
 fi
 
-# Copy to /Applications
-echo "Copying to /Applications..."
-rm -rf "/Applications/$APP_NAME.app"
-cp -R "$DMG_APP" "/Applications/"
+# Copy to /Applications, elevating or falling back as needed since a
+# non-admin account cannot write to /Applications directly.
+if [ -w "$INSTALL_DIR" ]; then
+    echo "Copying to $INSTALL_DIR..."
+    rm -rf "$INSTALL_DIR/$APP_NAME.app"
+    cp -R "$DMG_APP" "$INSTALL_DIR/"
+else
+    echo "Administrator authorization is required to install to $INSTALL_DIR."
+    RM_CMD="rm -rf '$INSTALL_DIR/$APP_NAME.app'"
+    CP_CMD="cp -R '$DMG_APP' '$INSTALL_DIR/'"
+    if osascript -e "do shell script \"$RM_CMD && $CP_CMD\" with administrator privileges with prompt \"Claude-o-Meter Installer wants to make changes.\"" 2>/dev/null; then
+        echo "Copied to $INSTALL_DIR."
+    else
+        INSTALL_DIR="$HOME/Applications"
+        echo "Administrator authorization was not granted. Installing to your personal"
+        echo "Applications folder instead: $INSTALL_DIR"
+        mkdir -p "$INSTALL_DIR"
+        rm -rf "$INSTALL_DIR/$APP_NAME.app"
+        cp -R "$DMG_APP" "$INSTALL_DIR/"
+    fi
+fi
 
 # Verify the copy actually landed before doing anything else with it. On macOS,
 # if this app (or Terminal) isn't granted "App Management" permission, cp can
 # silently fail partway, leaving an incomplete bundle — and every step below
 # swallows its own errors, so without this check we'd sign and open a broken app.
-if [ ! -f "/Applications/$APP_NAME.app/Contents/MacOS/$APP_NAME" ]; then
-    echo "ERROR: Copy to /Applications appears incomplete."
+if [ ! -f "$INSTALL_DIR/$APP_NAME.app/Contents/MacOS/$APP_NAME" ]; then
+    echo "ERROR: Copy to $INSTALL_DIR appears incomplete."
     echo "       This usually means Terminal (or whichever app ran this script) needs"
     echo "       \"App Management\" permission: System Settings > Privacy & Security >"
     echo "       App Management. Grant it and try installing again."
@@ -180,16 +198,16 @@ fi
 
 # Strip quarantine attributes and re-sign to ensure stable code signature
 # (quarantine stripping can invalidate the original signature)
-xattr -c "/Applications/$APP_NAME.app" 2>/dev/null || true
-find "/Applications/$APP_NAME.app" -exec xattr -c {} \; 2>/dev/null || true
-if ! codesign --force --deep --sign - "/Applications/$APP_NAME.app" 2>&1; then
+xattr -c "$INSTALL_DIR/$APP_NAME.app" 2>/dev/null || true
+find "$INSTALL_DIR/$APP_NAME.app" -exec xattr -c {} \; 2>/dev/null || true
+if ! codesign --force --deep --sign - "$INSTALL_DIR/$APP_NAME.app" 2>&1; then
     echo "WARNING: Ad-hoc codesign of the installed app failed. It may still run,"
     echo "         but macOS Gatekeeper could refuse to open it."
 fi
 
 # Launch
 echo "Launching $APP_NAME..."
-open "/Applications/$APP_NAME.app"
+open "$INSTALL_DIR/$APP_NAME.app"
 
 echo ""
 echo "Done! $APP_NAME is running in your menu bar."
