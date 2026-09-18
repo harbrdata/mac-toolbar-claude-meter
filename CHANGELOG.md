@@ -1,3 +1,13 @@
+## [1.10.3](https://github.com/harbrdata/mac-toolbar-claude-meter/compare/1.10.2...1.10.3) (2026-09-18)
+
+
+### Bug Fixes
+
+* **build:** Add an admin prompt ([051f3c7](https://github.com/harbrdata/mac-toolbar-claude-meter/commit/051f3c7e1f7a5ffee548468a437e432bd696409e))
+* **build:** run quarantine strip and codesign as root, don't abort on osacompile failure ([f6de22e](https://github.com/harbrdata/mac-toolbar-claude-meter/commit/f6de22e5e5463d770999dd11deb9b0203e881479))
+* **build:** use array to safely quote helper app binary path ([c096a68](https://github.com/harbrdata/mac-toolbar-claude-meter/commit/c096a68aa9d6f67515b021a3dcd11eb50e587fcb))
+* **usage:** fix file icon ([30e4c97](https://github.com/harbrdata/mac-toolbar-claude-meter/commit/30e4c97b3d00bd24b32143f396b6fcdca2f27c52))
+
 ## [1.10.2](https://github.com/harbrdata/mac-toolbar-claude-meter/compare/1.10.1...1.10.2) (2026-09-18)
 
 
